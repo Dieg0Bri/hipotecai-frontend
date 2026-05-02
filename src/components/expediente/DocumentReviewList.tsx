@@ -52,6 +52,22 @@ export default function DocumentReviewList({ folio, onChange }: Props) {
     refresh();
   }, [refresh]);
 
+  // Polling automático mientras haya archivos en estados activos:
+  //  · 'recibido' → recién subido, Eventarc aún no llegó al clasificador
+  //  · 'clasificando' → clasificador-api corriendo
+  //  · 'extrayendo' → documentos-api corriendo
+  // Refresh cada 3s. Se apaga solo cuando todos están en estado terminal.
+  useEffect(() => {
+    const activos = archivos.filter((a) =>
+      a.estado_procesamiento === 'recibido' ||
+      a.estado_procesamiento === 'clasificando' ||
+      a.estado_procesamiento === 'extrayendo',
+    ).length;
+    if (activos === 0) return;
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, [archivos, refresh]);
+
   const cambiarTipo = async (a: ArchivoEstudio, idClasif: number) => {
     setSavingId(a.id_archivo);
     try {
@@ -203,6 +219,10 @@ function ArchivoRow({ index, archivo, tipos, saving, onCambiarTipo, onAprobar, o
   const procesado = archivo.estado_procesamiento === 'procesado';
   const extrayendo = archivo.estado_procesamiento === 'extrayendo';
   const enError = archivo.estado_procesamiento === 'error';
+  // Recién subido (Eventarc todavía no llegó) o el clasificador está corriendo:
+  // ambos quedan como "Clasificando…" en la UI con un buffer.
+  const clasificando = archivo.estado_procesamiento === 'recibido' ||
+                       archivo.estado_procesamiento === 'clasificando';
   const sinClasif = archivo.id_clasificacion == null;
 
   // Agrupamos los tipos por categoría para el dropdown
@@ -241,6 +261,12 @@ function ArchivoRow({ index, archivo, tipos, saving, onCambiarTipo, onAprobar, o
                     <RotateCcw className="w-3 h-3" strokeWidth={2} /> Reprocesar
                   </button>
                 </>
+              )}
+              {clasificando && (
+                <Chip tone="amber">
+                  <Loader2 className="w-3 h-3 inline mr-1 animate-spin" strokeWidth={2} />
+                  Clasificando
+                </Chip>
               )}
               {extrayendo && (
                 <Chip tone="amber">
@@ -281,7 +307,7 @@ function ArchivoRow({ index, archivo, tipos, saving, onCambiarTipo, onAprobar, o
             <div className="text-[11px] text-[#6B6B6B]">Tipo:</div>
             <div className="relative">
               <select
-                disabled={saving || procesado || extrayendo}
+                disabled={saving || procesado || extrayendo || clasificando}
                 value={archivo.id_clasificacion ?? ''}
                 onChange={(e) => onCambiarTipo(parseInt(e.target.value, 10))}
                 className="appearance-none pr-8 pl-3 py-1.5 text-[12px] border border-[#E5DFD3] rounded-[2px] bg-white hover:border-[#A47148] focus:border-[#A47148] focus:outline-none disabled:opacity-50 disabled:bg-[#FBF9F2]"
@@ -309,7 +335,7 @@ function ArchivoRow({ index, archivo, tipos, saving, onCambiarTipo, onAprobar, o
             {aprobado ? (
               <button
                 onClick={onDesaprobar}
-                disabled={saving || procesado || extrayendo}
+                disabled={saving || procesado || extrayendo || clasificando}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] border border-[#3A6B47] text-[#3A6B47] rounded-[2px] hover:bg-[#F0F4EE] disabled:opacity-50"
                 title="Quitar aprobación"
               >
@@ -319,7 +345,7 @@ function ArchivoRow({ index, archivo, tipos, saving, onCambiarTipo, onAprobar, o
             ) : (
               <button
                 onClick={onAprobar}
-                disabled={saving || sinClasif || procesado || extrayendo}
+                disabled={saving || sinClasif || procesado || extrayendo || clasificando}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] border border-[#A47148] text-[#A47148] rounded-[2px] hover:bg-[#FBF9F2] disabled:opacity-50"
               >
                 {saving ? <Loader2 className="w-3 h-3 animate-spin" strokeWidth={2} /> : null}
