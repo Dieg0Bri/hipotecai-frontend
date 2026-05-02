@@ -1,0 +1,72 @@
+name: deploy-prod
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve backend URLs (prod)
+        id: backends
+        run: |
+          set -e
+          P="${{ secrets.GCP_PROJECT }}"
+          R="southamerica-west1"
+          resolve() { gcloud run services describe "$1" --region=$R --project=$P --format='value(status.url)' 2>/dev/null || echo ""; }
+          LOGIN=$(resolve login-service)
+          ESTUDIOS=$(resolve estudios-service)
+          INGESTION=$(resolve ingestion-service)
+          CLASIFICADOR=$(resolve clasificador-api)
+          DOCUMENTOS=$(resolve documentos-api)
+          SINTETIZADOR=$(resolve sintetizador-api)
+          VERIFICACION=$(resolve verificacion-legal-api)
+          echo "login=$LOGIN" >> $GITHUB_OUTPUT
+          echo "estudios=$ESTUDIOS" >> $GITHUB_OUTPUT
+          echo "ingestion=$INGESTION" >> $GITHUB_OUTPUT
+          echo "clasificador=$CLASIFICADOR" >> $GITHUB_OUTPUT
+          echo "documentos=$DOCUMENTOS" >> $GITHUB_OUTPUT
+          echo "sintetizador=$SINTETIZADOR" >> $GITHUB_OUTPUT
+          echo "verificacion=$VERIFICACION" >> $GITHUB_OUTPUT
+          if [ -z "$LOGIN" ] || [ -z "$ESTUDIOS" ]; then
+            echo "::error::login-service o estudios-service en prod no estan desplegados todavia"
+            exit 1
+          fi
+
+      - name: Cloud Build (frontend prod)
+        run: |
+          gcloud builds submit . \
+            --config=cloudbuild-prod.yaml \
+            --project=${{ secrets.GCP_PROJECT }} \
+            --substitutions=_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}",_API_LOGIN_URL="${{ steps.backends.outputs.login }}",_API_ESTUDIOS_URL="${{ steps.backends.outputs.estudios }}",_API_INGESTION_URL="${{ steps.backends.outputs.ingestion }}",_API_CLASIFICADOR_URL="${{ steps.backends.outputs.clasificador }}",_API_DOCUMENTOS_URL="${{ steps.backends.outputs.documentos }}",_API_SINTETIZADOR_URL="${{ steps.backends.outputs.sintetizador }}",_API_VERIFICACION_URL="${{ steps.backends.outputs.verificacion }}"
+
+      - id: url
+        run: |
+          URL=$(gcloud run services describe frontend --region=southamerica-west1 --project=${{ secrets.GCP_PROJECT }} --format='value(status.url)')
+          echo "service_url=$URL" >> $GITHUB_OUTPUT
+
+      - name: Smoke test
+        run: |
+          set -e
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.url.outputs.service_url }}/")
+          echo "HTTP $STATUS"
+          [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]

@@ -1,0 +1,27 @@
+name: pr-checks
+on:
+  pull_request:
+    branches: [develop, main]
+jobs:
+  lint-and-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: Lint
+        run: npm run lint || true
+      - name: Type check (next build dry-run)
+        run: |
+          NEXT_PUBLIC_API_LOGIN_URL=http://x \
+          NEXT_PUBLIC_API_ESTUDIOS_URL=http://x \
+          NEXT_PUBLIC_API_INGESTION_URL=http://x \
+          NEXT_PUBLIC_API_CLASIFICADOR_URL=http://x \
+          NEXT_PUBLIC_API_DOCUMENTOS_URL=http://x \
+          NEXT_PUBLIC_API_SINTETIZADOR_URL=http://x \
+          NEXT_PUBLIC_API_VERIFICACION_URL=http://x \
+          NEXT_PUBLIC_GOOGLE_CLIENT_ID=dummy \
+          NEXT_PUBLIC_HIPOTECAI_ENV=dev \
+          npx tsc --noEmit

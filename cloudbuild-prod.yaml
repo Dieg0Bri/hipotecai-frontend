@@ -1,0 +1,65 @@
+# Cloud Build · frontend · prod
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build'
+    args:
+      - 'build'
+      - '--build-arg=NEXT_PUBLIC_GOOGLE_CLIENT_ID=${_GOOGLE_CLIENT_ID}'
+      - '--build-arg=NEXT_PUBLIC_API_LOGIN_URL=${_API_LOGIN_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_ESTUDIOS_URL=${_API_ESTUDIOS_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_INGESTION_URL=${_API_INGESTION_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_CLASIFICADOR_URL=${_API_CLASIFICADOR_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_DOCUMENTOS_URL=${_API_DOCUMENTOS_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_SINTETIZADOR_URL=${_API_SINTETIZADOR_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_VERIFICACION_URL=${_API_VERIFICACION_URL}'
+      - '--build-arg=NEXT_PUBLIC_HIPOTECAI_ENV=prod'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_SERVICE_NAME}:latest'
+      - '.'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push'
+    args: ['push', '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_SERVICE_NAME}:latest']
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'Deploy'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_SERVICE_NAME}:latest'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--service-account=frontend-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+      - '--set-env-vars=NODE_ENV=production,HIPOTECAI_ENV=prod'
+      - '--port=8080'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--timeout=60'
+      - '--concurrency=80'
+      - '--max-instances=10'
+      - '--min-instances=0'
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_SERVICE_NAME}:latest'
+
+serviceAccount: 'projects/${PROJECT_ID}/serviceAccounts/cloudbuild-deployer-sa@${PROJECT_ID}.iam.gserviceaccount.com'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET
+
+substitutions:
+  _SERVICE_NAME: 'frontend'
+  _REPO_NAME: 'hipotecai-services'
+  _REGION: 'southamerica-west1'
+  _GOOGLE_CLIENT_ID: ''
+  _API_LOGIN_URL: ''
+  _API_ESTUDIOS_URL: ''
+  _API_INGESTION_URL: ''
+  _API_CLASIFICADOR_URL: ''
+  _API_DOCUMENTOS_URL: ''
+  _API_SINTETIZADOR_URL: ''
+  _API_VERIFICACION_URL: ''

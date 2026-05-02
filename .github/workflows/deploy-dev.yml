@@ -1,0 +1,80 @@
+name: deploy-dev
+
+# El frontend se construye con las URLs reales de los 7 servicios backend
+# horneadas (NEXT_PUBLIC_* via --build-arg). Por eso este workflow:
+#   1. Resuelve las URLs de los backends desplegados en dev
+#   2. Pasa esas URLs como --substitutions a Cloud Build
+#   3. Cloud Build hace docker build con --build-arg correctos
+#   4. Smoke test sobre / de Next.js
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Resolve backend URLs (dev)
+        id: backends
+        run: |
+          set -e
+          P="${{ secrets.GCP_PROJECT }}"
+          R="southamerica-west1"
+          resolve() { gcloud run services describe "$1" --region=$R --project=$P --format='value(status.url)' 2>/dev/null || echo ""; }
+          LOGIN=$(resolve login-service-dev)
+          ESTUDIOS=$(resolve estudios-service-dev)
+          INGESTION=$(resolve ingestion-service-dev)
+          CLASIFICADOR=$(resolve clasificador-api-dev)
+          DOCUMENTOS=$(resolve documentos-api-dev)
+          SINTETIZADOR=$(resolve sintetizador-api-dev)
+          VERIFICACION=$(resolve verificacion-legal-api-dev)
+          echo "login=$LOGIN" >> $GITHUB_OUTPUT
+          echo "estudios=$ESTUDIOS" >> $GITHUB_OUTPUT
+          echo "ingestion=$INGESTION" >> $GITHUB_OUTPUT
+          echo "clasificador=$CLASIFICADOR" >> $GITHUB_OUTPUT
+          echo "documentos=$DOCUMENTOS" >> $GITHUB_OUTPUT
+          echo "sintetizador=$SINTETIZADOR" >> $GITHUB_OUTPUT
+          echo "verificacion=$VERIFICACION" >> $GITHUB_OUTPUT
+          echo "::notice title=backend URLs::login=$LOGIN | estudios=$ESTUDIOS | ingestion=$INGESTION"
+          if [ -z "$LOGIN" ] || [ -z "$ESTUDIOS" ]; then
+            echo "::error::login-service o estudios-service en dev no estan desplegados todavia"
+            exit 1
+          fi
+
+      - name: Cloud Build (frontend dev)
+        run: |
+          gcloud builds submit . \
+            --config=cloudbuild-staging.yaml \
+            --project=${{ secrets.GCP_PROJECT }} \
+            --substitutions=_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}",_API_LOGIN_URL="${{ steps.backends.outputs.login }}",_API_ESTUDIOS_URL="${{ steps.backends.outputs.estudios }}",_API_INGESTION_URL="${{ steps.backends.outputs.ingestion }}",_API_CLASIFICADOR_URL="${{ steps.backends.outputs.clasificador }}",_API_DOCUMENTOS_URL="${{ steps.backends.outputs.documentos }}",_API_SINTETIZADOR_URL="${{ steps.backends.outputs.sintetizador }}",_API_VERIFICACION_URL="${{ steps.backends.outputs.verificacion }}"
+
+      - id: url
+        run: |
+          URL=$(gcloud run services describe frontend-dev --region=southamerica-west1 --project=${{ secrets.GCP_PROJECT }} --format='value(status.url)')
+          echo "service_url=$URL" >> $GITHUB_OUTPUT
+          echo "::notice title=Deployed::frontend-dev -> $URL"
+
+      - name: Smoke test
+        run: |
+          set -e
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ steps.url.outputs.service_url }}/")
+          echo "HTTP $STATUS"
+          [ "$STATUS" = "200" ] || [ "$STATUS" = "307" ] || [ "$STATUS" = "308" ]
