@@ -1,83 +1,98 @@
 'use client';
 
 /**
- * /estudios · cartera de estudios hipotecarios
+ * /estudios · cartera de estudios hipotecarios (datos reales)
  * --------------------------------------------------------------
- * Listado tipo registro de propiedad: filtros sobrios arriba,
- * tabla densa abajo. Sin gradientes ni alegría visual gratuita.
+ * Listado conectado a estudios-service. Filtra por estado + búsqueda
+ * server-side. Muestra el avance (calculado desde estado_procesamiento de
+ * los archivos) cuando viene del backend.
  */
 
 import Link from 'next/link';
-import { useState, useMemo } from 'react';
-import { Search, MapPin, Building2, Clock, ArrowRight, PlusCircle } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import {
+  Search, MapPin, Building2, Clock, ArrowRight, PlusCircle, Loader2,
+} from 'lucide-react';
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
 import Chip from '@/components/ui/Chip';
 import Ornament from '@/components/brand/Ornament';
+import { listEstudios, type EstudioListItem } from '@/lib/estudio';
 
 type EstadoTone = 'amber' | 'forest' | 'burgundy' | 'navy' | 'mute';
 
-type Estudio = {
-  id: string;
-  rol: string;
-  direccion: string;
-  comuna: string;
-  cliente: string;
-  estado: string;
-  estadoTone: EstadoTone;
-  avance: number;
-  documentos: number;
-  ultima: string;
+// Mapa de código de estado a tono visual del Chip.
+const ESTADO_TONE: Record<string, EstadoTone> = {
+  borrador:    'mute',
+  en_analisis: 'amber',
+  observado:   'burgundy',
+  verificado:  'forest',
+  archivado:   'navy',
 };
 
-const ESTUDIOS: Estudio[] = [
-  { id: 'EH-2026-0114', rol: '12.345-7', direccion: 'Av. Apoquindo 5400', comuna: 'Las Condes',     cliente: 'Mutuaria del Pacífico SpA', estado: 'En análisis',  estadoTone: 'amber',    avance: 64, documentos: 11, ultima: 'hace 2 h' },
-  { id: 'EH-2026-0113', rol: '02.870-3', direccion: 'Pasaje Los Olmos 117', comuna: 'Ñuñoa',         cliente: 'Banco Bice',                estado: 'Verificado',   estadoTone: 'forest',   avance: 100, documentos: 9,  ultima: 'ayer' },
-  { id: 'EH-2026-0112', rol: '08.991-K', direccion: 'Camino el Alba 12000', comuna: 'Lo Barnechea',  cliente: 'Inmobiliaria Las Encinas',  estado: 'Observado',    estadoTone: 'burgundy', avance: 89, documentos: 14, ultima: 'hace 3 d' },
-  { id: 'EH-2026-0111', rol: '54.012-9', direccion: 'Vicuña Mackenna 9870', comuna: 'La Florida',    cliente: 'Particular - J. Soto',      estado: 'Borrador',     estadoTone: 'mute',     avance: 12, documentos: 3,  ultima: 'hace 5 d' },
-  { id: 'EH-2026-0110', rol: '03.456-2', direccion: 'Pedro de Valdivia 200', comuna: 'Providencia',  cliente: 'Banco Santander Chile',     estado: 'En análisis',  estadoTone: 'amber',    avance: 41, documentos: 7,  ultima: 'hace 1 sem' },
-  { id: 'EH-2026-0109', rol: '17.220-4', direccion: 'Caupolicán 458',        comuna: 'Concepción',   cliente: 'Mutuaria CChC',             estado: 'Verificado',   estadoTone: 'forest',   avance: 100, documentos: 12, ultima: 'hace 2 sem' },
+const FILTROS: { key: string; label: string }[] = [
+  { key: 'todos',       label: 'Todos' },
+  { key: 'borrador',    label: 'En borrador' },
+  { key: 'en_analisis', label: 'En análisis' },
+  { key: 'observado',   label: 'Con observación' },
+  { key: 'verificado',  label: 'Verificados' },
 ];
 
-const FILTROS: { key: string; label: string; count: number }[] = [
-  { key: 'todos',      label: 'Todos',          count: 14 },
-  { key: 'borrador',   label: 'En borrador',    count: 2 },
-  { key: 'analisis',   label: 'En análisis',    count: 6 },
-  { key: 'observado',  label: 'Con observación', count: 2 },
-  { key: 'verificado', label: 'Verificados',    count: 4 },
-];
+const fmtRelative = (iso: string | null | undefined): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return 'justo ahora';
+  if (diff < 3600) return `hace ${Math.floor(diff / 60)} min`;
+  if (diff < 86400) return `hace ${Math.floor(diff / 3600)} h`;
+  if (diff < 7 * 86400) return `hace ${Math.floor(diff / 86400)} d`;
+  return new Intl.DateTimeFormat('es-CL', { day: '2-digit', month: 'short' }).format(d);
+};
 
 export default function EstudiosPage() {
   const [search, setSearch] = useState('');
-  const [filtro, setFiltro] = useState('todos');
+  const [filtro, setFiltro] = useState<string>('todos');
+  const [estudios, setEstudios] = useState<EstudioListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const visibles = useMemo(() => {
-    return ESTUDIOS.filter((e) => {
-      if (search) {
-        const q = search.toLowerCase();
-        if (
-          !e.rol.toLowerCase().includes(q) &&
-          !e.direccion.toLowerCase().includes(q) &&
-          !e.cliente.toLowerCase().includes(q) &&
-          !e.id.toLowerCase().includes(q)
-        ) {
-          return false;
-        }
-      }
-      if (filtro === 'borrador' && e.estado !== 'Borrador') return false;
-      if (filtro === 'analisis' && e.estado !== 'En análisis') return false;
-      if (filtro === 'observado' && e.estado !== 'Observado') return false;
-      if (filtro === 'verificado' && e.estado !== 'Verificado') return false;
-      return true;
-    });
-  }, [search, filtro]);
+  const fetchEstudios = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await listEstudios({
+        estado: filtro === 'todos' ? undefined : filtro,
+        search: search.trim() || undefined,
+        limit: 100,
+      });
+      setEstudios(data);
+    } catch (err) {
+      setError((err as Error).message);
+      setEstudios([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [filtro, search]);
+
+  // Refetch al cambiar filtro
+  useEffect(() => {
+    fetchEstudios();
+  }, [fetchEstudios]);
+
+  // Debounce de la búsqueda
+  useEffect(() => {
+    const id = setTimeout(fetchEstudios, 350);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
 
   return (
     <div className="min-h-screen flex flex-col paper-grain">
       <Navbar />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 lg:px-10 py-14">
-        {/* ─── Header ─── */}
+        {/* Header */}
         <header className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-6 mb-10 fade-up">
           <div>
             <div className="smallcaps text-[#A47148] mb-3">Cartera</div>
@@ -99,9 +114,8 @@ export default function EstudiosPage() {
 
         <Ornament tone="bronze" className="mb-10 max-w-md" />
 
-        {/* ─── Filtros ─── */}
+        {/* Filtros */}
         <div className="flex flex-col lg:flex-row gap-4 mb-6">
-          {/* Buscador */}
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#6B6B6B]" strokeWidth={1.5} />
             <input
@@ -113,7 +127,6 @@ export default function EstudiosPage() {
             />
           </div>
 
-          {/* Filtros chips */}
           <div className="flex flex-wrap gap-1.5 items-center">
             <span className="smallcaps text-[#6B6B6B] mr-2 hidden sm:inline">Estado</span>
             {FILTROS.map((f) => (
@@ -126,13 +139,13 @@ export default function EstudiosPage() {
                     : 'bg-transparent border-[#E5DFD3] text-[#3F3F3F] hover:border-[#A47148] hover:text-[#0B1F3A]'
                 }`}
               >
-                {f.label} <span className="ml-1 opacity-70 tabular">{f.count}</span>
+                {f.label}
               </button>
             ))}
           </div>
         </div>
 
-        {/* ─── Tabla / registro ─── */}
+        {/* Tabla */}
         <div className="paper-card overflow-hidden">
           <table className="registro-table">
             <thead>
@@ -149,89 +162,112 @@ export default function EstudiosPage() {
               </tr>
             </thead>
             <tbody>
-              {visibles.length === 0 && (
+              {loading && (
                 <tr>
                   <td colSpan={9} className="text-center py-16 text-[#6B6B6B]">
-                    <div className="font-serif italic text-[18px]">Sin estudios que coincidan con su búsqueda.</div>
-                    <p className="text-[13px] mt-2">Pruebe ajustar los filtros o la consulta.</p>
+                    <Loader2 className="w-5 h-5 inline animate-spin text-[#A47148]" strokeWidth={1.5} />
+                    <span className="ml-3 text-[13px]">Cargando expedientes…</span>
                   </td>
                 </tr>
               )}
-              {visibles.map((e) => (
-                <tr key={e.id}>
-                  <td>
-                    <Link
-                      href={`/estudios/${e.id}`}
-                      className="font-mono tabular text-[12px] text-[#0B1F3A] hover:text-[#A47148] transition-colors"
+              {!loading && error && (
+                <tr>
+                  <td colSpan={9} className="text-center py-12">
+                    <div className="font-serif italic text-[16px] text-[#7E1F1F]">No se pudo cargar la cartera.</div>
+                    <p className="text-[12px] mt-1 text-[#6B6B6B]">{error}</p>
+                    <button
+                      onClick={fetchEstudios}
+                      className="mt-3 text-[11px] uppercase tracking-[0.14em] text-[#A47148] hover:text-[#0B1F3A]"
                     >
-                      {e.id}
-                    </Link>
-                  </td>
-                  <td className="font-mono tabular text-[13px] text-[#1C1C1C]">{e.rol}</td>
-                  <td>
-                    <div className="flex items-start gap-2">
-                      <MapPin className="w-3.5 h-3.5 mt-0.5 text-[#A47148] flex-shrink-0" strokeWidth={1.5} />
-                      <div>
-                        <div className="text-[#1C1C1C]">{e.direccion}</div>
-                        <div className="text-[11px] text-[#6B6B6B] uppercase tracking-[0.08em] mt-0.5">{e.comuna}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-2 text-[#3F3F3F]">
-                      <Building2 className="w-3.5 h-3.5 text-[#6B6B6B]" strokeWidth={1.5} />
-                      <span className="truncate max-w-[14rem]">{e.cliente}</span>
-                    </div>
-                  </td>
-                  <td>
-                    <Chip tone={e.estadoTone}>{e.estado}</Chip>
-                  </td>
-                  <td>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-[3px] bg-[#E5DFD3] rounded-full overflow-hidden">
-                        <div className="h-full bg-[#0B1F3A]" style={{ width: `${e.avance}%` }} />
-                      </div>
-                      <span className="text-[11px] tabular text-[#6B6B6B] w-8 text-right">{e.avance}%</span>
-                    </div>
-                  </td>
-                  <td className="text-right tabular text-[#1C1C1C]">{e.documentos}</td>
-                  <td className="text-right">
-                    <div className="inline-flex items-center gap-1.5 text-[11px] text-[#6B6B6B]">
-                      <Clock className="w-3 h-3" strokeWidth={1.5} />
-                      {e.ultima}
-                    </div>
-                  </td>
-                  <td className="text-right">
-                    <Link
-                      href={`/estudios/${e.id}`}
-                      className="inline-flex items-center justify-center w-8 h-8 text-[#0B1F3A] hover:text-[#A47148] hover:bg-[#FBF9F2] rounded-[2px] transition-colors"
-                    >
-                      <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
-                    </Link>
+                      Reintentar
+                    </button>
                   </td>
                 </tr>
-              ))}
+              )}
+              {!loading && !error && estudios.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="text-center py-16 text-[#6B6B6B]">
+                    <div className="font-serif italic text-[18px]">Sin estudios que coincidan con su búsqueda.</div>
+                    <p className="text-[13px] mt-2">
+                      <Link href="/estudios/nuevo" className="text-[#A47148] hover:text-[#0B1F3A]">
+                        Abra un nuevo expediente
+                      </Link>{' '}
+                      para empezar.
+                    </p>
+                  </td>
+                </tr>
+              )}
+              {!loading && !error && estudios.map((e) => {
+                const tone = ESTADO_TONE[e.estado_codigo ?? 'borrador'] || 'mute';
+                const avance = typeof e.avance === 'number' ? Math.round(e.avance) : 0;
+                const docs = e.total_archivos ?? 0;
+                return (
+                  <tr key={e.folio}>
+                    <td>
+                      <Link
+                        href={`/estudios/${encodeURIComponent(e.folio)}`}
+                        className="font-mono tabular text-[12px] text-[#0B1F3A] hover:text-[#A47148] transition-colors"
+                      >
+                        {e.folio}
+                      </Link>
+                    </td>
+                    <td className="font-mono tabular text-[13px] text-[#1C1C1C]">{e.rol_sii || '—'}</td>
+                    <td>
+                      <div className="flex items-start gap-2">
+                        <MapPin className="w-3.5 h-3.5 mt-0.5 text-[#A47148] flex-shrink-0" strokeWidth={1.5} />
+                        <div>
+                          <div className="text-[#1C1C1C]">{e.direccion}</div>
+                          <div className="text-[11px] text-[#6B6B6B] uppercase tracking-[0.08em] mt-0.5">{e.comuna}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-2 text-[#3F3F3F]">
+                        <Building2 className="w-3.5 h-3.5 text-[#6B6B6B]" strokeWidth={1.5} />
+                        <span className="truncate max-w-[14rem]">{e.cliente_nombre || '—'}</span>
+                      </div>
+                    </td>
+                    <td>
+                      <Chip tone={tone}>{e.estado_nombre || e.estado_codigo || '—'}</Chip>
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-[3px] bg-[#E5DFD3] rounded-full overflow-hidden">
+                          <div className="h-full bg-[#0B1F3A]" style={{ width: `${avance}%` }} />
+                        </div>
+                        <span className="text-[11px] tabular text-[#6B6B6B] w-8 text-right">{avance}%</span>
+                      </div>
+                    </td>
+                    <td className="text-right tabular text-[#1C1C1C]">{docs}</td>
+                    <td className="text-right">
+                      <div className="inline-flex items-center gap-1.5 text-[11px] text-[#6B6B6B]" suppressHydrationWarning>
+                        <Clock className="w-3 h-3" strokeWidth={1.5} />
+                        {fmtRelative(e.ultima_actualizacion ?? e.fecha_creacion)}
+                      </div>
+                    </td>
+                    <td className="text-right">
+                      <Link
+                        href={`/estudios/${encodeURIComponent(e.folio)}`}
+                        className="inline-flex items-center justify-center w-8 h-8 text-[#0B1F3A] hover:text-[#A47148] hover:bg-[#FBF9F2] rounded-[2px] transition-colors"
+                      >
+                        <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
+                      </Link>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
-        {/* paginador / footer registro */}
-        <div className="mt-6 flex items-center justify-between text-[12px] text-[#6B6B6B]">
-          <span>Mostrando {visibles.length} de {ESTUDIOS.length} estudios</span>
-          <div className="flex items-center gap-2">
-            <button className="px-3 py-1.5 border border-[#E5DFD3] hover:border-[#A47148] rounded-[2px] text-[#3F3F3F] disabled:opacity-30" disabled>
-              Anterior
-            </button>
-            <span className="px-3 py-1.5 border border-[#0B1F3A] bg-[#0B1F3A] text-[#F8F5EE] rounded-[2px] tabular">1</span>
-            <button className="px-3 py-1.5 border border-[#E5DFD3] hover:border-[#A47148] rounded-[2px] text-[#3F3F3F]">
-              Siguiente
-            </button>
+        {!loading && !error && estudios.length > 0 && (
+          <div className="mt-6 flex items-center justify-between text-[12px] text-[#6B6B6B]">
+            <span>Mostrando {estudios.length} expediente(s)</span>
           </div>
-        </div>
+        )}
       </main>
 
       <Footer />
     </div>
   );
 }
-

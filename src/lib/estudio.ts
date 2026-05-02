@@ -64,6 +64,34 @@ export async function getEstudio(folio: string): Promise<EstudioData> {
   return json.data;
 }
 
+export interface EstudioListItem extends EstudioData {
+  // listado puede traer extras: progreso, conteo de archivos, etc.
+  total_archivos?: number;
+  archivos_procesados?: number;
+  avance?: number;
+  ultima_actualizacion?: string;
+}
+
+export interface ListEstudiosFilter {
+  estado?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function listEstudios(filter: ListEstudiosFilter = {}): Promise<EstudioListItem[]> {
+  const params = new URLSearchParams();
+  if (filter.estado) params.set('estado', filter.estado);
+  if (filter.search) params.set('search', filter.search);
+  if (filter.limit) params.set('limit', String(filter.limit));
+  if (filter.offset) params.set('offset', String(filter.offset));
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  const res = await authedFetch(`${API_URLS.estudios}/api-estudios/estudios${qs}`);
+  if (!res.ok) throw new Error(`listEstudios ${res.status}`);
+  const json = (await res.json()) as { data: EstudioListItem[] };
+  return json.data;
+}
+
 export async function listArchivos(folio: string): Promise<ArchivoEstudio[]> {
   const res = await authedFetch(
     `${API_URLS.estudios}/api-estudios/estudios/${encodeURIComponent(folio)}/archivos`,
