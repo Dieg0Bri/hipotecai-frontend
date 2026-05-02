@@ -1,42 +1,43 @@
 'use client';
 
 /**
- * /estudios/[folio] · expediente abierto
+ * /estudios/[folio] · expediente abierto (datos reales)
  * --------------------------------------------------------------
- * Layout vertical en secciones (estilo expediente):
- *   I.   Carátula con datos del estudio
- *   II.  Documentos cargados (con extracción expandible)
- *   III. Síntesis del inmueble (cards consolidadas)
- *   IV.  Hallazgos legales
- *   V.   Acciones (cerrar / generar informe)
- *
- * v0: usa mock-estudio.ts. Cuando los servicios estén conectados,
- * los hooks `useEstudio(folio)`, `useArchivos(folio)`,
- * `useSintesis(folio)`, `useHallazgos(folio)` reemplazarán los datos.
+ *  I.    Carátula con datos del estudio
+ *  II.   Documentos cargados — clasificación editable + aprobación humana
+ *        + botón "Procesar todo" gated por revision-stats
+ *  III.  Documentos solicitados por triggers (IF/THEN del clasificador)
+ *  IV.   Síntesis (mock por ahora — Slice 5)
+ *  V.    Hallazgos legales (mock por ahora — Slice 5)
+ *  VI.   Acciones de cierre
  */
 
-import { use } from 'react';
+import { use, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import {
-  ArrowLeft, Plus, Sparkles, ScrollText, FileCheck2, Archive, Send,
+  ArrowLeft, Plus, Sparkles, ScrollText, FileCheck2, Archive, Send, Loader2,
+  CheckCircle2, AlertTriangle,
 } from 'lucide-react';
 
 import Navbar from '@/components/layout/Navbar';
 import Footer from '@/components/layout/Footer';
 import Ornament from '@/components/brand/Ornament';
 import ExpedienteHeader from '@/components/expediente/ExpedienteHeader';
-import DocumentList from '@/components/expediente/DocumentList';
+import DocumentReviewList from '@/components/expediente/DocumentReviewList';
 import DocumentosSolicitadosPanel from '@/components/expediente/DocumentosSolicitadosPanel';
 import SynthesisCards from '@/components/expediente/SynthesisCards';
 import HallazgosList from '@/components/expediente/HallazgosList';
 
 import {
   ESTUDIO_MOCK,
-  ARCHIVOS_MOCK,
   SINTESIS_CARDS_MOCK,
   SINTESIS_RESUMEN_MOCK,
   HALLAZGOS_MOCK,
 } from '@/data/mock-estudio';
+import {
+  getEstudio, getRevisionStats, procesarEstudio, listArchivos,
+  type EstudioData, type RevisionStats, type ProcesarIniciado,
+} from '@/lib/estudio';
 
 interface PageProps {
   params: Promise<{ folio: string }>;
@@ -45,23 +46,100 @@ interface PageProps {
 export default function ExpedientePage({ params }: PageProps) {
   const { folio } = use(params);
 
-  // En v0 cargamos siempre el mismo mock; en próximas iteraciones
-  // se buscará en backend por `folio`.
-  const estudio = { ...ESTUDIO_MOCK, folio };
-  const archivos = ARCHIVOS_MOCK;
-  const sintesisCards = SINTESIS_CARDS_MOCK;
-  const sintesisResumen = SINTESIS_RESUMEN_MOCK;
-  const hallazgos = HALLAZGOS_MOCK;
+  const [estudio, setEstudio] = useState<EstudioData | null>(null);
+  const [stats, setStats] = useState<RevisionStats | null>(null);
+  const [iniciando, setIniciando] = useState(false);
+  const [procesarMsg, setProcesarMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [reviewKey, setReviewKey] = useState(0);
+  const [activosExtrayendo, setActivosExtrayendo] = useState(0);
 
-  const procesados = archivos.filter((a) => a.estado_procesamiento === 'procesado').length;
-  const enProgreso = archivos.length - procesados;
+  const refreshStats = useCallback(async () => {
+    try {
+      const s = await getRevisionStats(folio);
+      setStats(s);
+    } catch {
+      /* silencioso */
+    }
+  }, [folio]);
+
+  // Cuenta cuántos archivos están en estado activo ('extrayendo' o 'clasificando')
+  // para decidir si seguir haciendo polling.
+  const refreshActivos = useCallback(async () => {
+    try {
+      const archivos = await listArchivos(folio);
+      const activos = archivos.filter(
+        (a) => a.estado_procesamiento === 'extrayendo' || a.estado_procesamiento === 'clasificando',
+      ).length;
+      setActivosExtrayendo(activos);
+    } catch {
+      /* silencioso */
+    }
+  }, [folio]);
+
+  useEffect(() => {
+    getEstudio(folio).then(setEstudio).catch(() => setEstudio(null));
+    refreshStats();
+    refreshActivos();
+  }, [folio, refreshStats, refreshActivos]);
+
+  // Polling automático cada 2.5s mientras hay archivos en estado activo
+  // (background processing en estudios-service). Se apaga cuando llega a 0.
+  useEffect(() => {
+    if (activosExtrayendo === 0) return;
+    const id = setInterval(() => {
+      refreshActivos();
+      refreshStats();
+      setReviewKey((k) => k + 1); // fuerza al ReviewList a refrescar también
+    }, 2500);
+    return () => clearInterval(id);
+  }, [activosExtrayendo, refreshActivos, refreshStats]);
+
+  const handleProcesar = async () => {
+    setIniciando(true);
+    setProcesarMsg(null);
+    try {
+      const r = await procesarEstudio(folio);
+      setProcesarMsg({
+        ok: true,
+        text: r.total > 0
+          ? `Procesamiento iniciado: ${r.total} archivo(s) en cola.`
+          : 'Nada nuevo para procesar.',
+      });
+      // Refresh inmediato + arranca polling vía activosExtrayendo
+      setReviewKey((k) => k + 1);
+      await Promise.all([refreshStats(), refreshActivos()]);
+    } catch (err) {
+      setProcesarMsg({ ok: false, text: (err as Error).message });
+    } finally {
+      setIniciando(false);
+    }
+  };
+
+  // Hasta tener un endpoint real de estudio, el header usa lo que vino del backend
+  // o cae al mock para campos no críticos.
+  const estudioParaHeader = estudio
+    ? {
+        ...ESTUDIO_MOCK,
+        folio: estudio.folio,
+        rol_sii: estudio.rol_sii,
+        direccion: estudio.direccion,
+        comuna: estudio.comuna,
+        region: estudio.region ?? ESTUDIO_MOCK.region,
+        encargo: estudio.encargo ?? ESTUDIO_MOCK.encargo,
+        plazo_dias: estudio.plazo_dias ?? ESTUDIO_MOCK.plazo_dias,
+        cliente_nombre: estudio.cliente_nombre ?? ESTUDIO_MOCK.cliente_nombre,
+      }
+    : { ...ESTUDIO_MOCK, folio };
+
+  const procesable = stats?.procesable ?? false;
+  const total = stats?.total ?? 0;
+  const aprobados = stats?.aprobados ?? 0;
 
   return (
     <div className="min-h-screen flex flex-col paper-grain">
       <Navbar />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-6 lg:px-10 py-10">
-        {/* Breadcrumb */}
         <div className="flex items-center justify-between mb-8">
           <Link
             href="/estudios"
@@ -72,12 +150,15 @@ export default function ExpedientePage({ params }: PageProps) {
           </Link>
 
           <div className="flex items-center gap-2">
-            <button className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px]">
+            <Link
+              href="/estudios/nuevo"
+              className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px]"
+            >
               <Plus className="w-3.5 h-3.5" strokeWidth={1.5} /> Subir documento
-            </button>
+            </Link>
             <button
               className="btn-bronze inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px] cursor-pointer"
-              onClick={() => alert('v0: lanza /verificar en verificacion-legal-api')}
+              onClick={() => alert('v0+1: lanza /verificar en verificacion-legal-api')}
             >
               <Sparkles className="w-3.5 h-3.5" strokeWidth={1.5} /> Verificar legalmente
             </button>
@@ -85,17 +166,78 @@ export default function ExpedientePage({ params }: PageProps) {
         </div>
 
         {/* I. Carátula */}
-        <ExpedienteHeader estudio={estudio} />
+        <ExpedienteHeader estudio={estudioParaHeader} />
 
-        {/* II. Documentos */}
+        {/* II. Documentos + revisión humana + procesar */}
         <section className="mt-12">
           <SectionHeader
             number="II"
             eyebrow="Sección segunda"
             title="Documentos del expediente"
-            description={`${archivos.length} cargados · ${procesados} procesados · ${enProgreso} en progreso.`}
+            description="Revise la clasificación que la IA propuso para cada documento. Confirme o corrija antes de procesar las extracciones."
           />
-          <DocumentList archivos={archivos} />
+
+          {/* Banner de procesamiento */}
+          <div className="paper-card p-5 mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              {activosExtrayendo > 0 ? (
+                <Loader2 className="w-5 h-5 text-[#A47148] animate-spin" strokeWidth={1.5} />
+              ) : procesable ? (
+                <CheckCircle2 className="w-5 h-5 text-[#3A6B47]" strokeWidth={1.5} />
+              ) : (
+                <AlertTriangle className="w-5 h-5 text-[#A47148]" strokeWidth={1.5} />
+              )}
+              <div>
+                <div className="font-serif text-[16px] text-[#0B1F3A] font-medium">
+                  {activosExtrayendo > 0
+                    ? `Procesando ${activosExtrayendo} archivo(s)…`
+                    : procesable
+                    ? 'Todos los documentos están aprobados.'
+                    : `${aprobados} de ${total} documentos aprobados.`}
+                </div>
+                <div className="text-[11px] text-[#6B6B6B]">
+                  {activosExtrayendo > 0
+                    ? 'Las extracciones corren en background. Puede cerrar esta pestaña, el proceso sigue.'
+                    : procesable
+                    ? 'Puede procesar las extracciones del expediente.'
+                    : 'Apruebe la clasificación de cada documento para habilitar el procesamiento.'}
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={handleProcesar}
+              disabled={!procesable || iniciando || activosExtrayendo > 0}
+              className="btn-bronze inline-flex items-center gap-2 px-5 py-2.5 text-[12px] uppercase tracking-[0.14em] rounded-[2px] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {iniciando ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
+                  Iniciando…
+                </>
+              ) : activosExtrayendo > 0 ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
+                  En proceso
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" strokeWidth={1.5} />
+                  Procesar todo el expediente
+                </>
+              )}
+            </button>
+          </div>
+
+          {procesarMsg && (
+            <div className={`paper-card p-4 mb-4 border-l-2 ${procesarMsg.ok ? 'border-[#3A6B47]' : 'border-[#7E1F1F]'}`}>
+              <div className={`smallcaps mb-1 ${procesarMsg.ok ? 'text-[#3A6B47]' : 'text-[#7E1F1F]'}`}>
+                {procesarMsg.ok ? 'Procesamiento iniciado' : 'Error al procesar'}
+              </div>
+              <div className="text-[13px] text-[#3F3F3F]">{procesarMsg.text}</div>
+            </div>
+          )}
+
+          <DocumentReviewList key={reviewKey} folio={folio} onChange={refreshStats} />
         </section>
 
         {/* III. Documentos solicitados (triggers IF/THEN) */}
@@ -109,7 +251,7 @@ export default function ExpedientePage({ params }: PageProps) {
           <DocumentosSolicitadosPanel folio={folio} />
         </section>
 
-        {/* IV. Síntesis */}
+        {/* IV. Síntesis (mock — Slice 5) */}
         <section className="mt-12">
           <SectionHeader
             number="IV"
@@ -117,10 +259,10 @@ export default function ExpedientePage({ params }: PageProps) {
             title="Síntesis del inmueble"
             description="Datos consolidados de las extracciones por fuente documental, contrastados entre sí."
           />
-          <SynthesisCards cards={sintesisCards} resumen={sintesisResumen} />
+          <SynthesisCards cards={SINTESIS_CARDS_MOCK} resumen={SINTESIS_RESUMEN_MOCK} />
         </section>
 
-        {/* V. Hallazgos */}
+        {/* V. Hallazgos (mock — Slice 5) */}
         <section className="mt-12">
           <SectionHeader
             number="V"
@@ -128,7 +270,7 @@ export default function ExpedientePage({ params }: PageProps) {
             title="Hallazgos de la verificación legal"
             description="Observaciones detectadas por el motor de reglas chilenas. Marque cada hallazgo como resuelto antes de cerrar el estudio."
           />
-          <HallazgosList hallazgos={hallazgos} />
+          <HallazgosList hallazgos={HALLAZGOS_MOCK} />
         </section>
 
         {/* VI. Acciones de cierre */}
@@ -150,19 +292,19 @@ export default function ExpedientePage({ params }: PageProps) {
               <div className="flex flex-wrap gap-2 self-start lg:self-auto">
                 <button
                   className="btn-ghost inline-flex items-center gap-2 px-5 py-3 text-[12px] uppercase tracking-[0.14em] rounded-[2px]"
-                  onClick={() => alert('v0: archiva el estudio')}
+                  onClick={() => alert('v0+1: archiva el estudio')}
                 >
                   <Archive className="w-3.5 h-3.5" strokeWidth={1.5} /> Archivar
                 </button>
                 <button
                   className="btn-primary inline-flex items-center gap-2 px-5 py-3 text-[12px] uppercase tracking-[0.14em] rounded-[2px] cursor-pointer"
-                  onClick={() => alert('v0: marca verificado en estudios-service')}
+                  onClick={() => alert('v0+1: marca verificado en estudios-service')}
                 >
                   <FileCheck2 className="w-3.5 h-3.5" strokeWidth={1.5} /> Marcar verificado
                 </button>
                 <button
                   className="btn-bronze inline-flex items-center gap-2 px-5 py-3 text-[12px] uppercase tracking-[0.14em] rounded-[2px] cursor-pointer"
-                  onClick={() => alert('v0: genera el informe en PDF (próxima iteración)')}
+                  onClick={() => alert('v0+1: genera el informe en PDF')}
                 >
                   <Send className="w-3.5 h-3.5" strokeWidth={1.5} /> Emitir informe
                 </button>
@@ -170,15 +312,6 @@ export default function ExpedientePage({ params }: PageProps) {
             </div>
           </div>
         </section>
-
-        {/* Cita de cierre */}
-        <div className="mt-16 flex items-center justify-center gap-4 text-[#A47148] opacity-60">
-          <ScrollText className="w-4 h-4" strokeWidth={1.25} />
-          <span className="font-serif text-[13px] italic tracking-wide">
-            Veritas filia temporis
-          </span>
-          <ScrollText className="w-4 h-4 scale-x-[-1]" strokeWidth={1.25} />
-        </div>
       </main>
 
       <Footer />
@@ -187,16 +320,8 @@ export default function ExpedientePage({ params }: PageProps) {
 }
 
 function SectionHeader({
-  number,
-  eyebrow,
-  title,
-  description,
-}: {
-  number: string;
-  eyebrow: string;
-  title: string;
-  description: string;
-}) {
+  number, eyebrow, title, description,
+}: { number: string; eyebrow: string; title: string; description: string }) {
   return (
     <div className="flex items-start gap-5 mb-5">
       <div className="font-serif text-[#A47148] text-[44px] leading-none italic select-none mt-[-4px] tabular">
