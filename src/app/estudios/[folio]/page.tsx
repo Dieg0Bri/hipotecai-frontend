@@ -26,6 +26,7 @@ import Footer from '@/components/layout/Footer';
 import Ornament from '@/components/brand/Ornament';
 import ExpedienteHeader from '@/components/expediente/ExpedienteHeader';
 import DocumentList from '@/components/expediente/DocumentList';
+import DocumentosSolicitadosPanel from '@/components/expediente/DocumentosSolicitadosPanel';
 import SynthesisCards from '@/components/expediente/SynthesisCards';
 import HallazgosList from '@/components/expediente/HallazgosList';
 
@@ -97,36 +98,47 @@ export default function ExpedientePage({ params }: PageProps) {
           <DocumentList archivos={archivos} />
         </section>
 
-        {/* III. Síntesis */}
+        {/* III. Documentos solicitados (triggers IF/THEN) */}
         <section className="mt-12">
           <SectionHeader
             number="III"
             eyebrow="Sección tercera"
+            title="Documentos pendientes solicitados"
+            description="Antecedentes adicionales que el sistema detectó necesarios al revisar los documentos base (condominio, bien familiar, persona jurídica, usufructo, etc.)."
+          />
+          <DocumentosSolicitadosPanel folio={folio} />
+        </section>
+
+        {/* IV. Síntesis */}
+        <section className="mt-12">
+          <SectionHeader
+            number="IV"
+            eyebrow="Sección cuarta"
             title="Síntesis del inmueble"
             description="Datos consolidados de las extracciones por fuente documental, contrastados entre sí."
           />
           <SynthesisCards cards={sintesisCards} resumen={sintesisResumen} />
         </section>
 
-        {/* IV. Hallazgos */}
+        {/* V. Hallazgos */}
         <section className="mt-12">
           <SectionHeader
-            number="IV"
-            eyebrow="Sección cuarta"
+            number="V"
+            eyebrow="Sección quinta"
             title="Hallazgos de la verificación legal"
             description="Observaciones detectadas por el motor de reglas chilenas. Marque cada hallazgo como resuelto antes de cerrar el estudio."
           />
           <HallazgosList hallazgos={hallazgos} />
         </section>
 
-        {/* V. Acciones de cierre */}
+        {/* VI. Acciones de cierre */}
         <section className="mt-12">
           <Ornament tone="bronze" className="mb-8 max-w-md mx-auto" />
 
           <div className="paper-card p-8 sm:p-10">
             <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
               <div>
-                <span className="smallcaps text-[#A47148]">Sección quinta</span>
+                <span className="smallcaps text-[#A47148]">Sección sexta</span>
                 <h2 className="font-serif text-[28px] sm:text-[32px] leading-[1.1] tracking-[-0.01em] text-[#0B1F3A] font-medium mt-1">
                   Cierre del expediente
                 </h2>
