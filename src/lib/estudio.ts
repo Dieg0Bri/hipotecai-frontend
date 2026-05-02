@@ -31,12 +31,12 @@ export interface RevisionStats {
   procesable: boolean;
 }
 
-// El endpoint /procesar ahora responde 202 + un payload con cuántos archivos
-// se enviaron al loop background. Frontend hace polling para ver el progreso.
-export interface ProcesarIniciado {
+export interface ProcesarResultado {
   folio: string;
   total: number;
-  mensaje: string;
+  exitosos: number;
+  fallidos: number;
+  resultados: Array<{ id_archivo: number; nombre: string; ok: boolean; status?: number; error?: string }>;
 }
 
 export interface EstudioData {
@@ -104,14 +104,13 @@ export async function getRevisionStats(folio: string): Promise<RevisionStats> {
   return json.data;
 }
 
-export async function procesarEstudio(folio: string): Promise<ProcesarIniciado> {
+export async function procesarEstudio(folio: string): Promise<ProcesarResultado> {
   const res = await authedFetch(
     `${API_URLS.estudios}/api-estudios/estudios/${encodeURIComponent(folio)}/procesar`,
     { method: 'POST' },
   );
-  // 202 = aceptado, corriendo en background; 200 = nada nuevo para procesar.
   if (!res.ok) throw new Error(`procesarEstudio ${res.status}: ${await res.text()}`);
-  const json = (await res.json()) as { data: ProcesarIniciado };
+  const json = (await res.json()) as { data: ProcesarResultado };
   return json.data;
 }
 

@@ -35,8 +35,8 @@ import {
   HALLAZGOS_MOCK,
 } from '@/data/mock-estudio';
 import {
-  getEstudio, getRevisionStats, procesarEstudio, listArchivos,
-  type EstudioData, type RevisionStats, type ProcesarIniciado,
+  getEstudio, getRevisionStats, procesarEstudio,
+  type EstudioData, type RevisionStats,
 } from '@/lib/estudio';
 
 interface PageProps {
@@ -48,10 +48,9 @@ export default function ExpedientePage({ params }: PageProps) {
 
   const [estudio, setEstudio] = useState<EstudioData | null>(null);
   const [stats, setStats] = useState<RevisionStats | null>(null);
-  const [iniciando, setIniciando] = useState(false);
-  const [procesarMsg, setProcesarMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [reviewKey, setReviewKey] = useState(0);
-  const [activosExtrayendo, setActivosExtrayendo] = useState(0);
+  const [procesando, setProcesando] = useState(false);
+  const [procesarMsg, setProcesarMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   const refreshStats = useCallback(async () => {
     try {
@@ -62,56 +61,29 @@ export default function ExpedientePage({ params }: PageProps) {
     }
   }, [folio]);
 
-  // Cuenta cuántos archivos están en estado activo ('extrayendo' o 'clasificando')
-  // para decidir si seguir haciendo polling.
-  const refreshActivos = useCallback(async () => {
-    try {
-      const archivos = await listArchivos(folio);
-      const activos = archivos.filter(
-        (a) => a.estado_procesamiento === 'extrayendo' || a.estado_procesamiento === 'clasificando',
-      ).length;
-      setActivosExtrayendo(activos);
-    } catch {
-      /* silencioso */
-    }
-  }, [folio]);
-
   useEffect(() => {
     getEstudio(folio).then(setEstudio).catch(() => setEstudio(null));
     refreshStats();
-    refreshActivos();
-  }, [folio, refreshStats, refreshActivos]);
-
-  // Polling automático cada 2.5s mientras hay archivos en estado activo
-  // (background processing en estudios-service). Se apaga cuando llega a 0.
-  useEffect(() => {
-    if (activosExtrayendo === 0) return;
-    const id = setInterval(() => {
-      refreshActivos();
-      refreshStats();
-      setReviewKey((k) => k + 1); // fuerza al ReviewList a refrescar también
-    }, 2500);
-    return () => clearInterval(id);
-  }, [activosExtrayendo, refreshActivos, refreshStats]);
+  }, [folio, refreshStats]);
 
   const handleProcesar = async () => {
-    setIniciando(true);
+    setProcesando(true);
     setProcesarMsg(null);
     try {
       const r = await procesarEstudio(folio);
       setProcesarMsg({
-        ok: true,
-        text: r.total > 0
-          ? `Procesamiento iniciado: ${r.total} archivo(s) en cola.`
-          : 'Nada nuevo para procesar.',
+        ok: r.fallidos === 0,
+        text:
+          r.fallidos === 0
+            ? `${r.exitosos} archivo(s) procesado(s) correctamente.`
+            : `${r.exitosos} OK, ${r.fallidos} con error. Usá "Reintentar" en los que fallaron.`,
       });
-      // Refresh inmediato + arranca polling vía activosExtrayendo
       setReviewKey((k) => k + 1);
-      await Promise.all([refreshStats(), refreshActivos()]);
+      refreshStats();
     } catch (err) {
       setProcesarMsg({ ok: false, text: (err as Error).message });
     } finally {
-      setIniciando(false);
+      setProcesando(false);
     }
   };
 
@@ -180,7 +152,7 @@ export default function ExpedientePage({ params }: PageProps) {
           {/* Banner de procesamiento */}
           <div className="paper-card p-5 mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="flex items-center gap-3">
-              {activosExtrayendo > 0 ? (
+              {procesando ? (
                 <Loader2 className="w-5 h-5 text-[#A47148] animate-spin" strokeWidth={1.5} />
               ) : procesable ? (
                 <CheckCircle2 className="w-5 h-5 text-[#3A6B47]" strokeWidth={1.5} />
@@ -189,15 +161,15 @@ export default function ExpedientePage({ params }: PageProps) {
               )}
               <div>
                 <div className="font-serif text-[16px] text-[#0B1F3A] font-medium">
-                  {activosExtrayendo > 0
-                    ? `Procesando ${activosExtrayendo} archivo(s)…`
+                  {procesando
+                    ? 'Procesando expediente…'
                     : procesable
                     ? 'Todos los documentos están aprobados.'
                     : `${aprobados} de ${total} documentos aprobados.`}
                 </div>
                 <div className="text-[11px] text-[#6B6B6B]">
-                  {activosExtrayendo > 0
-                    ? 'Las extracciones corren en background. Puede cerrar esta pestaña, el proceso sigue.'
+                  {procesando
+                    ? 'Extrayendo datos. Esto puede tardar varios minutos.'
                     : procesable
                     ? 'Puede procesar las extracciones del expediente.'
                     : 'Apruebe la clasificación de cada documento para habilitar el procesamiento.'}
@@ -206,18 +178,13 @@ export default function ExpedientePage({ params }: PageProps) {
             </div>
             <button
               onClick={handleProcesar}
-              disabled={!procesable || iniciando || activosExtrayendo > 0}
+              disabled={!procesable || procesando}
               className="btn-bronze inline-flex items-center gap-2 px-5 py-2.5 text-[12px] uppercase tracking-[0.14em] rounded-[2px] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {iniciando ? (
+              {procesando ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
-                  Iniciando…
-                </>
-              ) : activosExtrayendo > 0 ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" strokeWidth={1.5} />
-                  En proceso
+                  Procesando…
                 </>
               ) : (
                 <>
