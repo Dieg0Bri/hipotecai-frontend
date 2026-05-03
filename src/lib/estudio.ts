@@ -101,6 +101,38 @@ export async function listArchivos(folio: string): Promise<ArchivoEstudio[]> {
   return json.data;
 }
 
+export interface ExtraccionItem {
+  id_extraccion: number;
+  schema_codigo: string;
+  datos: Record<string, unknown>;
+  spans: Array<{ field?: string; value?: string; start_char?: number; end_char?: number }> | null;
+  confianza: number | null;
+  fecha: string;
+}
+
+export interface ArchivoConExtracciones extends ArchivoEstudio {
+  clasificacion_categoria: string | null;
+  clasificacion_emisor: string | null;
+  extracciones: ExtraccionItem[];
+}
+
+export async function getArchivo(folio: string, fileId: number): Promise<ArchivoConExtracciones> {
+  const res = await authedFetch(
+    `${API_URLS.estudios}/api-estudios/estudios/${encodeURIComponent(folio)}/archivos/${fileId}`,
+  );
+  if (!res.ok) throw new Error(`getArchivo ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { data: ArchivoConExtracciones };
+  return json.data;
+}
+
+export async function getSignedDownloadUrl(gcsPath: string): Promise<string> {
+  const url = `${API_URLS.ingestion}/api-ingestion/upload/signed-download-url?gcs_path=${encodeURIComponent(gcsPath)}`;
+  const res = await authedFetch(url);
+  if (!res.ok) throw new Error(`getSignedDownloadUrl ${res.status}`);
+  const json = (await res.json()) as { data: { download_url: string } };
+  return json.data.download_url;
+}
+
 export async function updateArchivoMetadata(
   folio: string,
   fileId: number,
