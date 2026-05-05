@@ -42,6 +42,15 @@ export interface Entity {
   char_interval?: { start: number; end: number };
   /** Marca si el campo fue editado por el letrado */
   edited?: boolean;
+
+  /* ─── Trazabilidad de evidencia (migración 006) ─── */
+  /** De dónde vino el texto que respalda este campo. UI pinta badge "vía OCR"
+   *  cuando es 'ocr' para que el letrado sepa que es transcripción de modelo. */
+  fuente_texto?: 'pdf_text' | 'ocr';
+  /** Página del documento donde se ancla la evidencia. */
+  pagina?: number;
+  /** Confianza del modelo OCR sobre el span — solo para fuente_texto='ocr'. */
+  confianza_ocr?: number;
 }
 
 /* ─────────────────── Categorías visuales ─────────────────── */

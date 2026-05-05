@@ -14,7 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   IdCard, Users, MapPin, Banknote, Pen, ShieldAlert, CheckCircle2, Map, FileQuestion,
-  Search, X, ChevronDown, ChevronRight, Edit3, Check,
+  Search, X, ChevronDown, ChevronRight, Edit3, Check, ScanLine,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -191,9 +191,26 @@ export default function EntityPanel({
                             <span className="text-[10px] tracking-[0.14em] uppercase font-medium" style={{ color: meta.ink }}>
                               {ent.label}
                             </span>
-                            {ent.confidence !== undefined && ent.confidence > 0 && (
-                              <span className="text-[10px] tabular text-[#6B6B6B]">{Math.round(ent.confidence * 100)}%</span>
-                            )}
+                            <div className="flex items-center gap-1.5">
+                              {ent.fuente_texto === 'ocr' && (
+                                <span
+                                  title={ent.confianza_ocr != null
+                                    ? `Texto reconocido por OCR · confianza ${Math.round(ent.confianza_ocr * 100)}%`
+                                    : 'Texto reconocido por OCR (no aparece literal en el PDF)'}
+                                  className="inline-flex items-center gap-0.5 px-1 py-0.5 text-[9px] tracking-[0.1em] uppercase rounded-[2px] bg-[#FFF4D6] text-[#7A5A00] border border-[#E5C97E]"
+                                >
+                                  <ScanLine className="w-2.5 h-2.5" strokeWidth={1.75} /> OCR
+                                </span>
+                              )}
+                              {ent.pagina != null && (
+                                <span className="text-[9px] tabular text-[#6B6B6B]" title={`Página ${ent.pagina}`}>
+                                  p.{ent.pagina}
+                                </span>
+                              )}
+                              {ent.confidence !== undefined && ent.confidence > 0 && (
+                                <span className="text-[10px] tabular text-[#6B6B6B]">{Math.round(ent.confidence * 100)}%</span>
+                              )}
+                            </div>
                           </div>
                           <div
                             className="text-[13px] text-[#1C1C1C] leading-snug break-words"

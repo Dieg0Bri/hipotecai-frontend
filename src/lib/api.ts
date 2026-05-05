@@ -19,6 +19,7 @@ export const API_URLS = {
   documentos:   process.env.NEXT_PUBLIC_API_DOCUMENTOS_URL   ?? '',
   sintetizador: process.env.NEXT_PUBLIC_API_SINTETIZADOR_URL ?? '',
   verificacion: process.env.NEXT_PUBLIC_API_VERIFICACION_URL ?? '',
+  ocr:          process.env.NEXT_PUBLIC_API_OCR_URL          ?? '',
 } as const;
 
 export class AuthRequiredError extends Error {

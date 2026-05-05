@@ -4,6 +4,12 @@
  */
 import { authedFetch, API_URLS } from './api';
 
+export type EstadoProcesamiento =
+  | 'recibido' | 'clasificando' | 'clasificado' | 'extrayendo' | 'procesado' | 'error';
+export type EstadoRevision = 'pendiente' | 'aprobado' | 'observado' | 'rechazado';
+export type FuenteExtraccion = 'pdf_text' | 'ocr';
+export type EstadoOcr = 'no_aplica' | 'pendiente' | 'procesando' | 'listo' | 'error';
+
 export interface ArchivoEstudio {
   id_archivo: number;
   nombre: string;
@@ -15,11 +21,17 @@ export interface ArchivoEstudio {
   clasificacion_codigo: string | null;
   clasificacion_nombre: string | null;
   clasificacion_confianza: number | null;
-  estado_procesamiento: 'recibido' | 'clasificando' | 'clasificado' | 'extrayendo' | 'procesado' | 'error';
-  estado_revision: 'pendiente' | 'aprobado' | 'observado' | 'rechazado';
+  estado_procesamiento: EstadoProcesamiento;
+  estado_revision: EstadoRevision;
   observacion: string | null;
   fecha_subida: string;
   fecha_actualizacion: string;
+  // Decisión OCR del clasificador (migración 008). Pueden no venir en
+  // archivos previos a la migración — todos los consumidores usan default.
+  requiere_ocr?: boolean;
+  razon_ocr?: string | null;
+  fuente_extraccion?: FuenteExtraccion;
+  estado_ocr?: EstadoOcr;
 }
 
 export interface RevisionStats {
@@ -191,4 +203,108 @@ export async function reprocesarArchivo(folio: string, fileId: number): Promise<
   if (!res.ok) throw new Error(`reprocesarArchivo ${res.status}: ${await res.text()}`);
   const json = (await res.json()) as { data: ReprocesarResultado };
   return json.data;
+}
+
+/* ─────────────────────── OCR transcript ───────────────────────
+ *
+ * El OCR vive como markdown en un bucket separado (hipotecai-ocr-<env>).
+ * La BBDD guarda solo URI + offsets por página + bbox/confidence por línea.
+ * Estos helpers exponen esos artefactos al visor para la comparativa
+ * PDF original ↔ transcript OCR ↔ extracción.
+ */
+
+export interface OcrPagina {
+  id_ocr_pagina: number;
+  pagina: number;
+  /** Offsets dentro del .md OCR — el frontend usa esto para extraer la
+   *  sección de cada página sin re-parsear todo el markdown. */
+  char_start: number;
+  char_end: number;
+  confianza_promedio: number | null;
+  /** Líneas con bbox + confidence; útil para resaltar baja confianza. */
+  lines: Array<{
+    text: string;
+    bbox: [number, number, number, number] | null;
+    confidence: number | null;
+  }> | null;
+}
+
+export interface OcrDocumentoMeta {
+  id_ocr_documento: number;
+  id_archivo: number;
+  sha256_documento: string;
+  modelo: string;
+  formato: string;
+  gcs_bucket: string;
+  gcs_path: string;
+  gcs_uri: string;
+  bytes: number | null;
+  sha256_ocr: string;
+  paginas: number | null;
+  confianza_promedio: number | null;
+  fecha: string;
+}
+
+export interface OcrTranscript {
+  id_archivo: number;
+  documento: OcrDocumentoMeta | null;
+  paginas: OcrPagina[];
+}
+
+export async function getOcrTranscript(
+  idArchivo: number, modelo?: string,
+): Promise<OcrTranscript> {
+  const qs = modelo ? `?modelo=${encodeURIComponent(modelo)}` : '';
+  const res = await authedFetch(
+    `${API_URLS.documentos}/archivos/${idArchivo}/ocr${qs}`,
+  );
+  if (!res.ok) throw new Error(`getOcrTranscript ${res.status}`);
+  const json = (await res.json()) as { data: OcrTranscript };
+  return json.data;
+}
+
+/** Pide a ocr-api un signed URL al .md y descarga el contenido. */
+export async function getOcrMarkdown(gcsUri: string): Promise<string> {
+  if (!API_URLS.ocr) throw new Error('NEXT_PUBLIC_API_OCR_URL no configurado');
+  const sigRes = await authedFetch(
+    `${API_URLS.ocr}/ocr-document-url?gcs_uri=${encodeURIComponent(gcsUri)}`,
+  );
+  if (!sigRes.ok) throw new Error(`getOcrMarkdown sign ${sigRes.status}`);
+  const sigJson = (await sigRes.json()) as { data: { download_url: string } };
+
+  // El .md está en GCS — fetch directo, sin auth (la URL ya está firmada).
+  const dlRes = await fetch(sigJson.data.download_url);
+  if (!dlRes.ok) throw new Error(`getOcrMarkdown download ${dlRes.status}`);
+  return dlRes.text();
+}
+
+/* ─────────────────────── Evidencia ─────────────────────── */
+
+export interface EvidenciaItem {
+  id_evidencia: number;
+  campo: string;
+  page: number | null;
+  char_start: number | null;
+  char_end: number | null;
+  snippet: string | null;
+  sha256_documento: string;
+  confianza: number | null;
+  fuente_texto: FuenteExtraccion;
+  id_ocr: number | null;
+  confianza_ocr: number | null;
+  // Solo cuando fuente_texto='ocr':
+  id_ocr_documento: number | null;
+  ocr_modelo: string | null;
+  ocr_md_uri: string | null;
+  ocr_pagina_char_start: number | null;
+  ocr_pagina_char_end: number | null;
+}
+
+export async function getEvidencia(idExtraccion: number): Promise<EvidenciaItem[]> {
+  const res = await authedFetch(
+    `${API_URLS.documentos}/extracciones/${idExtraccion}/evidencia`,
+  );
+  if (!res.ok) throw new Error(`getEvidencia ${res.status}`);
+  const json = (await res.json()) as { data: { evidencia: EvidenciaItem[] } };
+  return json.data.evidencia;
 }

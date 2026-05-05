@@ -3,31 +3,37 @@
 /**
  * /estudios/[folio]/documentos/[id]
  * --------------------------------------------------------------
- * Visor con datos REALES del backend + highlights de extracciones:
+ * Visor del documento con datos REALES del backend.
  *
  *   1. GET archivo + extracciones (estudios-service)
  *   2. signed-download-url para el PDF (ingestion-service → GCS)
- *   3. Convierte extracciones JSONB a Entity[] (extractionToEntities)
- *   4. PDFCanvas renderiza el PDF con react-pdf y EntityHighlight
- *      busca cada `text` en el text-layer del pdf.js → overlay con
- *      highlights por categoría legal
+ *   3. Si fuente_extraccion === 'ocr' → carga transcript OCR + evidencia
+ *      (documentos-api) y muestra layout de TRES paneles:
+ *         PDF original | Transcripción OCR | Panel de extracciones
+ *      Si no, layout de DOS paneles (PDF + extracciones).
+ *   4. EntityPanel ahora pinta badge "vía OCR" en cada campo cuya
+ *      evidencia provino de la transcripción OCR (no del PDF nativo).
  *
- * Click bidireccional:
- *   · Click en panel → marca activa la entidad → PDF la resalta más fuerte y scroll
- *   · Click en highlight del PDF → marca activa la entidad → panel hace scroll
+ * Header lleva chips con estado_procesamiento y fuente_extraccion para
+ * que el letrado vea sin ambigüedad si el documento ya está procesado y
+ * de qué fuente vinieron los datos.
  */
 import { use, useEffect, useMemo, useState, useCallback } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft, CheckCircle2, AlertTriangle, FileSearch, Loader2,
+  ScanLine, FileText, Clock, AlertOctagon,
 } from 'lucide-react';
 
 import Navbar from '@/components/layout/Navbar';
 import Chip from '@/components/ui/Chip';
 import PDFCanvas, { PAGE_ID_PREFIX } from '@/components/visor/PDFCanvas';
 import EntityPanel from '@/components/visor/EntityPanel';
+import OcrTranscriptPanel from '@/components/visor/OcrTranscriptPanel';
 import {
-  getArchivo, getSignedDownloadUrl, type ArchivoConExtracciones,
+  getArchivo, getSignedDownloadUrl, getOcrTranscript, getEvidencia,
+  type ArchivoConExtracciones, type OcrTranscript, type EvidenciaItem,
+  type EstadoProcesamiento,
 } from '@/lib/estudio';
 import { extraccionesToEntities } from '@/lib/extractionToEntities';
 
@@ -41,31 +47,64 @@ export default function VisorDocumento({ params }: PageProps) {
 
   const [archivo, setArchivo] = useState<ArchivoConExtracciones | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [ocr, setOcr] = useState<OcrTranscript | null>(null);
+  const [evidencia, setEvidencia] = useState<EvidenciaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
 
-  // Memo: los Entity[] derivados de las extracciones reales para el visor
+  // Entities enriquecidas con la evidencia (badge OCR cuando aplica).
   const entities = useMemo(
-    () => (archivo ? extraccionesToEntities(archivo.extracciones) : []),
-    [archivo],
+    () => (archivo ? extraccionesToEntities(archivo.extracciones, evidencia) : []),
+    [archivo, evidencia],
+  );
+
+  const activeEntity = useMemo(
+    () => entities.find((e) => e.id === activeEntityId) ?? null,
+    [entities, activeEntityId],
   );
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setOcr(null);
+    setEvidencia([]);
+
     getArchivo(folio, idArchivo)
       .then(async (a) => {
         if (cancelled) return;
         setArchivo(a);
+
+        // PDF original — siempre se intenta, incluso si aún no se procesó.
         if (a.gcs_path) {
-          try {
-            const url = await getSignedDownloadUrl(a.gcs_path);
-            if (!cancelled) setPdfUrl(url);
-          } catch (err) {
-            if (!cancelled) setError(`No se pudo cargar el PDF: ${(err as Error).message}`);
-          }
+          getSignedDownloadUrl(a.gcs_path)
+            .then((url) => { if (!cancelled) setPdfUrl(url); })
+            .catch((err: Error) => {
+              if (!cancelled) setError(`No se pudo cargar el PDF: ${err.message}`);
+            });
+        }
+
+        // Transcript OCR — solo si fuente_extraccion='ocr' Y estado='listo'.
+        if (a.fuente_extraccion === 'ocr' && a.estado_ocr === 'listo') {
+          getOcrTranscript(a.id_archivo)
+            .then((t) => { if (!cancelled && t.documento) setOcr(t); })
+            .catch((err: Error) => {
+              // No bloquea la vista — solo el panel OCR no se muestra.
+              console.warn('OCR transcript no disponible:', err.message);
+            });
+        }
+
+        // Evidencia — una request por extracción. Pocas en práctica
+        // (1 archivo → 1 extracción típicamente), así que en serie está bien.
+        if (a.extracciones.length > 0) {
+          Promise.all(
+            a.extracciones.map((ext) =>
+              getEvidencia(ext.id_extraccion).catch(() => [] as EvidenciaItem[]),
+            ),
+          ).then((arrs) => {
+            if (!cancelled) setEvidencia(arrs.flat());
+          });
         }
       })
       .catch((err: Error) => {
@@ -74,10 +113,11 @@ export default function VisorDocumento({ params }: PageProps) {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => { cancelled = true; };
   }, [folio, idArchivo]);
 
-  // Cuando se selecciona una entidad, scroll del PDF a su posición
+  // Cuando se selecciona una entidad, scroll del PDF a su posición.
   const handleEntityFound = useCallback((entityId: string, pageNumber: number, y: number) => {
     if (entityId !== activeEntityId) return;
     const pageEl = document.getElementById(`${PAGE_ID_PREFIX}-${pageNumber}`);
@@ -89,7 +129,7 @@ export default function VisorDocumento({ params }: PageProps) {
     scrollEl.scrollTo({ top, behavior: 'smooth' });
   }, [activeEntityId]);
 
-  // Click en highlight del PDF → marca entity activa en el panel
+  // Click en highlight del PDF → marca entity activa en el panel.
   const handleEntityClick = useCallback((entityId: string) => {
     setActiveEntityId((prev) => (prev === entityId ? null : entityId));
   }, []);
@@ -131,6 +171,7 @@ export default function VisorDocumento({ params }: PageProps) {
 
   const tipoNombre = archivo.clasificacion_nombre || archivo.clasificacion_codigo || 'Sin clasificar';
   const confianza = archivo.clasificacion_confianza ?? 0;
+  const showOcrPanel = archivo.fuente_extraccion === 'ocr' && ocr?.documento;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F8F5EE]">
@@ -151,6 +192,10 @@ export default function VisorDocumento({ params }: PageProps) {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-0.5 flex-wrap">
               <Chip tone="navy">{tipoNombre}</Chip>
+              <EstadoProcesamientoChip estado={archivo.estado_procesamiento} />
+              {archivo.fuente_extraccion === 'ocr' && (
+                <FuenteOcrChip estadoOcr={archivo.estado_ocr} razon={archivo.razon_ocr} />
+              )}
               {confianza > 0 && (
                 <span className="text-[11px] tabular text-[#6B6B6B]">
                   Clasif. <strong className="text-[#0B1F3A]">{Math.round(confianza * 100)}%</strong>
@@ -181,7 +226,7 @@ export default function VisorDocumento({ params }: PageProps) {
         </div>
       </header>
 
-      {/* Layout dos columnas */}
+      {/* Layout: 2 paneles (PDF + entities) o 3 paneles (PDF + OCR + entities) */}
       <div className="flex-1 flex overflow-hidden" style={{ height: 'calc(100vh - 68px - 73px)' }}>
         <div className="flex-1 min-w-0">
           {pdfUrl ? (
@@ -200,6 +245,16 @@ export default function VisorDocumento({ params }: PageProps) {
           )}
         </div>
 
+        {showOcrPanel && ocr?.documento && (
+          <div className="w-[480px] flex-shrink-0 hidden xl:block">
+            <OcrTranscriptPanel
+              documento={ocr.documento}
+              paginas={ocr.paginas}
+              activeEntity={activeEntity}
+            />
+          </div>
+        )}
+
         <div className="w-[420px] flex-shrink-0 hidden lg:block">
           <EntityPanel
             entities={entities}
@@ -214,3 +269,69 @@ export default function VisorDocumento({ params }: PageProps) {
     </div>
   );
 }
+
+/* ───────────────────── Chips de estado para el header ───────────────────── */
+
+function EstadoProcesamientoChip({ estado }: { estado: EstadoProcesamiento }) {
+  const cfg = ESTADO_META[estado] ?? ESTADO_META.recibido;
+  const Icon = cfg.icon;
+  return (
+    <span
+      title={cfg.tooltip}
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] tracking-[0.1em] uppercase rounded-[2px] border"
+      style={{ background: cfg.bg, color: cfg.fg, borderColor: cfg.border }}
+    >
+      <Icon className="w-3 h-3" strokeWidth={1.5} /> {cfg.label}
+    </span>
+  );
+}
+
+function FuenteOcrChip({
+  estadoOcr, razon,
+}: { estadoOcr?: string; razon?: string | null }) {
+  const isReady = estadoOcr === 'listo';
+  const isError = estadoOcr === 'error';
+  const inProgress = estadoOcr === 'pendiente' || estadoOcr === 'procesando';
+
+  let bg = '#FFF4D6';
+  let fg = '#7A5A00';
+  let border = '#E5C97E';
+  let label = 'vía OCR';
+  let Icon = ScanLine;
+
+  if (isError) {
+    bg = '#FBE4E4'; fg = '#7E1F1F'; border = '#E5A8A8';
+    label = 'OCR con error';
+    Icon = AlertOctagon;
+  } else if (inProgress) {
+    bg = '#E8EEF6'; fg = '#0B1F3A'; border = '#B8C5DC';
+    label = 'OCR en curso';
+    Icon = Clock;
+  }
+
+  return (
+    <span
+      title={razon || (isReady ? 'Texto extraído vía OCR' : '')}
+      className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] tracking-[0.1em] uppercase rounded-[2px] border"
+      style={{ background: bg, color: fg, borderColor: border }}
+    >
+      <Icon className={`w-3 h-3 ${inProgress ? 'animate-pulse' : ''}`} strokeWidth={1.5} /> {label}
+    </span>
+  );
+}
+
+const ESTADO_META: Record<EstadoProcesamiento, {
+  label: string;
+  bg: string;
+  fg: string;
+  border: string;
+  icon: typeof FileText;
+  tooltip: string;
+}> = {
+  recibido:    { label: 'Subido',       bg: '#F2EEE3', fg: '#6B6B6B', border: '#D9D2C0', icon: FileText, tooltip: 'Documento subido, pendiente de clasificar' },
+  clasificando:{ label: 'Clasificando', bg: '#E8EEF6', fg: '#0B1F3A', border: '#B8C5DC', icon: Clock,    tooltip: 'En clasificación automática' },
+  clasificado: { label: 'Clasificado',  bg: '#E8F2E8', fg: '#2F5D3C', border: '#B8D8B8', icon: CheckCircle2, tooltip: 'Tipo identificado, pendiente de extracción' },
+  extrayendo:  { label: 'Extrayendo',   bg: '#E8EEF6', fg: '#0B1F3A', border: '#B8C5DC', icon: Clock,    tooltip: 'Extrayendo campos con IA' },
+  procesado:   { label: 'Procesado',    bg: '#E8F2E8', fg: '#2F5D3C', border: '#B8D8B8', icon: CheckCircle2, tooltip: 'Documento listo para revisión' },
+  error:       { label: 'Error',        bg: '#FBE4E4', fg: '#7E1F1F', border: '#E5A8A8', icon: AlertOctagon, tooltip: 'Falló — revisar y reprocesar' },
+};

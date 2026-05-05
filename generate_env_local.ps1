@@ -18,6 +18,7 @@ $CLASIFICADOR = Resolve-Url "clasificador-api-dev"
 $DOCUMENTOS   = Resolve-Url "documentos-api-dev"
 $SINTETIZADOR = Resolve-Url "sintetizador-api-dev"
 $VERIFICACION = Resolve-Url "verificacion-legal-api-dev"
+$OCR          = Resolve-Url "ocr-api-dev"
 
 $content = @"
 NEXT_PUBLIC_GOOGLE_CLIENT_ID=$Global:GOOGLE_CLIENT_ID
@@ -28,6 +29,7 @@ NEXT_PUBLIC_API_CLASIFICADOR_URL=$CLASIFICADOR
 NEXT_PUBLIC_API_DOCUMENTOS_URL=$DOCUMENTOS
 NEXT_PUBLIC_API_SINTETIZADOR_URL=$SINTETIZADOR
 NEXT_PUBLIC_API_VERIFICACION_URL=$VERIFICACION
+NEXT_PUBLIC_API_OCR_URL=$OCR
 NEXT_PUBLIC_HIPOTECAI_ENV=dev
 NODE_ENV=development
 "@

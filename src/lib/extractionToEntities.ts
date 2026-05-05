@@ -8,8 +8,12 @@
  *   · Para objetos simples (ej. deslindes: {norte, sur, ...}), se expanden subkeys
  *   · Valores no-resaltables (boolean, null, empty arrays, números puros sin contexto)
  *     se skip — solo lo que aparece como texto literal en el PDF se highlight-ea
+ *
+ * Si se pasa `evidencia`, cada Entity se enriquece con:
+ *   - fuente_texto: 'pdf_text' | 'ocr'  → para badge "vía OCR" en el panel
+ *   - pagina, confianza_ocr             → para sincronizar con el visor OCR
  */
-import type { ExtraccionItem } from './estudio';
+import type { EvidenciaItem, ExtraccionItem } from './estudio';
 import { categoryFor, labelFor, type Entity } from '@/data/entities';
 
 /**
@@ -18,7 +22,10 @@ import { categoryFor, labelFor, type Entity } from '@/data/entities';
  */
 const MIN_TEXT_LEN = 3;
 
-export function extraccionesToEntities(extracciones: ExtraccionItem[]): Entity[] {
+export function extraccionesToEntities(
+  extracciones: ExtraccionItem[],
+  evidencia?: EvidenciaItem[],
+): Entity[] {
   const out: Entity[] = [];
 
   for (const ext of extracciones) {
@@ -31,12 +38,33 @@ export function extraccionesToEntities(extracciones: ExtraccionItem[]): Entity[]
   // Dedupe: si el mismo `text` aparece dos veces, mantenemos solo el primero
   // (el highlight pintará todas las ocurrencias del texto en el PDF de todos modos).
   const seen = new Set<string>();
-  return out.filter((e) => {
+  const deduped = out.filter((e) => {
     const k = `${e.class}|${e.text.toLowerCase()}`;
     if (seen.has(k)) return false;
     seen.add(k);
     return true;
   });
+
+  // Enriquecer con evidencia. Match por (class === campo) — la evidencia nos
+  // da `campo` que es el mismo identificador que extraction_class. Para
+  // claves anidadas (deslindes.norte) hacemos un fallback por substring.
+  if (evidencia && evidencia.length > 0) {
+    const byCampo = new Map<string, EvidenciaItem>();
+    for (const ev of evidencia) {
+      if (!ev.campo) continue;
+      // Si el mismo campo aparece varias veces (lista), usamos la primera.
+      if (!byCampo.has(ev.campo)) byCampo.set(ev.campo, ev);
+    }
+    for (const ent of deduped) {
+      const ev = byCampo.get(ent.class);
+      if (!ev) continue;
+      ent.fuente_texto = ev.fuente_texto;
+      if (ev.page != null) ent.pagina = ev.page;
+      if (ev.confianza_ocr != null) ent.confianza_ocr = ev.confianza_ocr;
+    }
+  }
+
+  return deduped;
 }
 
 function pushEntities(
