@@ -17,6 +17,7 @@ steps:
       - '--build-arg=NEXT_PUBLIC_API_DOCUMENTOS_URL=${_API_DOCUMENTOS_URL}'
       - '--build-arg=NEXT_PUBLIC_API_SINTETIZADOR_URL=${_API_SINTETIZADOR_URL}'
       - '--build-arg=NEXT_PUBLIC_API_VERIFICACION_URL=${_API_VERIFICACION_URL}'
+      - '--build-arg=NEXT_PUBLIC_API_OCR_URL=${_API_OCR_URL}'
       - '--build-arg=NEXT_PUBLIC_HIPOTECAI_ENV=dev'
       - '-t'
       - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/${_SERVICE_NAME}:latest'
@@ -68,3 +69,4 @@ substitutions:
   _API_DOCUMENTOS_URL: ''
   _API_SINTETIZADOR_URL: ''
   _API_VERIFICACION_URL: ''
+  _API_OCR_URL: ''

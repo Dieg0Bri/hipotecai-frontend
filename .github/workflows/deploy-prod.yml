@@ -40,6 +40,7 @@ jobs:
           DOCUMENTOS=$(resolve documentos-api)
           SINTETIZADOR=$(resolve sintetizador-api)
           VERIFICACION=$(resolve verificacion-legal-api)
+          OCR=$(resolve ocr-api)
           echo "login=$LOGIN" >> $GITHUB_OUTPUT
           echo "estudios=$ESTUDIOS" >> $GITHUB_OUTPUT
           echo "ingestion=$INGESTION" >> $GITHUB_OUTPUT
@@ -47,6 +48,7 @@ jobs:
           echo "documentos=$DOCUMENTOS" >> $GITHUB_OUTPUT
           echo "sintetizador=$SINTETIZADOR" >> $GITHUB_OUTPUT
           echo "verificacion=$VERIFICACION" >> $GITHUB_OUTPUT
+          echo "ocr=$OCR" >> $GITHUB_OUTPUT
           if [ -z "$LOGIN" ] || [ -z "$ESTUDIOS" ]; then
             echo "::error::login-service o estudios-service en prod no estan desplegados todavia"
             exit 1
@@ -57,7 +59,7 @@ jobs:
           gcloud builds submit . \
             --config=cloudbuild-prod.yaml \
             --project=${{ secrets.GCP_PROJECT }} \
-            --substitutions=_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}",_API_LOGIN_URL="${{ steps.backends.outputs.login }}",_API_ESTUDIOS_URL="${{ steps.backends.outputs.estudios }}",_API_INGESTION_URL="${{ steps.backends.outputs.ingestion }}",_API_CLASIFICADOR_URL="${{ steps.backends.outputs.clasificador }}",_API_DOCUMENTOS_URL="${{ steps.backends.outputs.documentos }}",_API_SINTETIZADOR_URL="${{ steps.backends.outputs.sintetizador }}",_API_VERIFICACION_URL="${{ steps.backends.outputs.verificacion }}"
+            --substitutions=_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}",_API_LOGIN_URL="${{ steps.backends.outputs.login }}",_API_ESTUDIOS_URL="${{ steps.backends.outputs.estudios }}",_API_INGESTION_URL="${{ steps.backends.outputs.ingestion }}",_API_CLASIFICADOR_URL="${{ steps.backends.outputs.clasificador }}",_API_DOCUMENTOS_URL="${{ steps.backends.outputs.documentos }}",_API_SINTETIZADOR_URL="${{ steps.backends.outputs.sintetizador }}",_API_VERIFICACION_URL="${{ steps.backends.outputs.verificacion }}",_API_OCR_URL="${{ steps.backends.outputs.ocr }}"
 
       - id: url
         run: |
