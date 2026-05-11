@@ -32,6 +32,7 @@ import EntityPanel from '@/components/visor/EntityPanel';
 import OcrTranscriptPanel from '@/components/visor/OcrTranscriptPanel';
 import {
   getArchivo, getSignedDownloadUrl, getOcrTranscript, getEvidencia,
+  triggerManualOcr,
   type ArchivoConExtracciones, type OcrTranscript, type EvidenciaItem,
   type EstadoProcesamiento,
 } from '@/lib/estudio';
@@ -52,6 +53,8 @@ export default function VisorDocumento({ params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
+  const [ocrRunning, setOcrRunning] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
 
   // Entities enriquecidas con la evidencia (badge OCR cuando aplica).
   const entities = useMemo(
@@ -133,6 +136,40 @@ export default function VisorDocumento({ params }: PageProps) {
   const handleEntityClick = useCallback((entityId: string) => {
     setActiveEntityId((prev) => (prev === entityId ? null : entityId));
   }, []);
+
+  // Manual OCR — gatilla ocr-api directamente. Es síncrono y puede demorar
+  // varios segundos por página; refrescamos archivo + transcript al volver.
+  const handleManualOcr = useCallback(async () => {
+    if (!archivo || ocrRunning) return;
+    setOcrRunning(true);
+    setOcrError(null);
+    // Reflejo optimista en el header para que el chip cambie a 'OCR en curso'.
+    setArchivo((prev) => prev ? { ...prev, estado_ocr: 'procesando' } : prev);
+    try {
+      await triggerManualOcr(archivo.id_archivo, archivo.gcs_path);
+      const fresh = await getArchivo(folio, archivo.id_archivo);
+      setArchivo(fresh);
+      if (fresh.fuente_extraccion === 'ocr' && fresh.estado_ocr === 'listo') {
+        try {
+          const t = await getOcrTranscript(fresh.id_archivo);
+          if (t.documento) setOcr(t);
+        } catch (err) {
+          console.warn('OCR transcript no disponible tras manual:', err);
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setOcrError(msg);
+      setArchivo((prev) => prev ? { ...prev, estado_ocr: 'error' } : prev);
+    } finally {
+      setOcrRunning(false);
+    }
+  }, [archivo, folio, ocrRunning]);
+
+  const canRunOcr =
+    !!archivo && !ocrRunning &&
+    archivo.estado_ocr !== 'procesando' &&
+    archivo.estado_ocr !== 'listo';
 
   // Loading inicial
   if (loading && !archivo) {
@@ -216,6 +253,26 @@ export default function VisorDocumento({ params }: PageProps) {
           </div>
 
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleManualOcr}
+              disabled={!canRunOcr}
+              title={
+                ocrError
+                  ? `Error previo: ${ocrError}`
+                  : archivo.estado_ocr === 'listo'
+                    ? 'El OCR ya está hecho'
+                    : 'Procesa este documento con OCR'
+              }
+              className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {ocrRunning ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.5} />
+              ) : (
+                <ScanLine className="w-3.5 h-3.5" strokeWidth={1.5} />
+              )}
+              {ocrRunning ? 'Procesando OCR…' : 'Procesar OCR'}
+            </button>
             <button className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px]" disabled>
               <AlertTriangle className="w-3.5 h-3.5" strokeWidth={1.5} /> Observar
             </button>
@@ -225,6 +282,19 @@ export default function VisorDocumento({ params }: PageProps) {
           </div>
         </div>
       </header>
+
+      {ocrError && (
+        <div className="bg-[#FBE4E4] border-b border-[#E5A8A8] px-6 lg:px-10 py-2 text-[12px] text-[#7E1F1F] flex items-center gap-2">
+          <AlertOctagon className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>Error al procesar OCR: {ocrError}</span>
+          <button
+            onClick={() => setOcrError(null)}
+            className="ml-auto text-[11px] uppercase tracking-[0.14em] hover:text-[#5A1414]"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
 
       {/* Layout: 2 paneles (PDF + entities) o 3 paneles (PDF + OCR + entities) */}
       <div className="flex-1 flex overflow-hidden" style={{ height: 'calc(100vh - 68px - 73px)' }}>

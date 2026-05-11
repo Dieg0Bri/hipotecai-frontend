@@ -64,7 +64,8 @@ jobs:
           gcloud builds submit . \
             --config=cloudbuild-staging.yaml \
             --project=${{ secrets.GCP_PROJECT }} \
-            --substitutions=_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}",_API_LOGIN_URL="${{ steps.backends.outputs.login }}",_API_ESTUDIOS_URL="${{ steps.backends.outputs.estudios }}",_API_INGESTION_URL="${{ steps.backends.outputs.ingestion }}",_API_CLASIFICADOR_URL="${{ steps.backends.outputs.clasificador }}",_API_DOCUMENTOS_URL="${{ steps.backends.outputs.documentos }}",_API_SINTETIZADOR_URL="${{ steps.backends.outputs.sintetizador }}",_API_VERIFICACION_URL="${{ steps.backends.outputs.verificacion }}"
+            --substitutions=_GOOGLE_CLIENT_ID="${{ secrets.GOOGLE_CLIENT_ID }}",_API_LOGIN_URL="${{ steps.backends.outputs.login }}",_API_ESTUDIOS_URL="${{ steps.backends.outputs.estudios }}",_API_INGESTION_URL="${{ steps.backends.outputs.ingestion }}",_API_CLASIFICADOR_URL="${{ steps.backends.outputs.clasificador }}",_API_DOCUMENTOS_URL="${{ steps.backends.outputs.documentos }}",_API_SINTETIZADOR_URL="${{ steps.backends.outputs.sintetizador }}",_API_VERIFICACION_URL="${{ steps.backends.outputs.verificacion }}" \
+            --polling-interval=15
 
       - id: url
         run: |

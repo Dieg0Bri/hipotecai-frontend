@@ -263,6 +263,39 @@ export async function getOcrTranscript(
   return json.data;
 }
 
+/** Gatilla OCR manualmente para un archivo. Síncrono — el browser espera.
+ *
+ *  Útil cuando el clasificador no marcó requiere_ocr (PDF con texto nativo
+ *  pero el letrado quiere la transcripción) o cuando falló en el flujo
+ *  automático. Devuelve el resumen del OCR; el caller debe re-fetchear el
+ *  archivo para ver los nuevos campos (estado_ocr='listo', fuente='ocr'). */
+export interface OcrManualResult {
+  gcs_path: string;
+  sha256_documento?: string;
+  modelo?: string;
+  duracion_ms?: number;
+  n_pages?: number;
+  skipped?: boolean;
+  reason?: string;
+}
+
+export async function triggerManualOcr(
+  idArchivo: number, gcsPath: string,
+): Promise<OcrManualResult> {
+  if (!API_URLS.ocr) throw new Error('NEXT_PUBLIC_API_OCR_URL no configurado');
+  const res = await authedFetch(`${API_URLS.ocr}/ocr-from-gcs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id_archivo: idArchivo, gcs_path: gcsPath }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OCR ${res.status}: ${body.slice(0, 200)}`);
+  }
+  const json = (await res.json()) as { data: OcrManualResult };
+  return json.data;
+}
+
 /** Pide a ocr-api un signed URL al .md y descarga el contenido. */
 export async function getOcrMarkdown(gcsUri: string): Promise<string> {
   if (!API_URLS.ocr) throw new Error('NEXT_PUBLIC_API_OCR_URL no configurado');
