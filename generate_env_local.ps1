@@ -3,10 +3,13 @@
 . "$PSScriptRoot\..\infra\config.ps1"
 
 $REGION = "southamerica-west1"
+# ocr-api vive en us-central1 porque requiere GPU Nvidia L4 (no disponible
+# en southamerica-west1 a 2026-05).
+$REGION_OCR = "us-central1"
 
 function Resolve-Url {
-  param([string]$Service)
-  $u = gcloud run services describe $Service --region=$REGION --project=$PROJECT_ID --format='value(status.url)' 2>$null
+  param([string]$Service, [string]$Region = $REGION)
+  $u = gcloud run services describe $Service --region=$Region --project=$PROJECT_ID --format='value(status.url)' 2>$null
   if (-not $u) { Write-Host "  [!!] no encontrado: $Service" -ForegroundColor Yellow }
   return $u
 }
@@ -18,7 +21,7 @@ $CLASIFICADOR = Resolve-Url "clasificador-api-dev"
 $DOCUMENTOS   = Resolve-Url "documentos-api-dev"
 $SINTETIZADOR = Resolve-Url "sintetizador-api-dev"
 $VERIFICACION = Resolve-Url "verificacion-legal-api-dev"
-$OCR          = Resolve-Url "ocr-api-dev"
+$OCR          = Resolve-Url "ocr-api-dev" $REGION_OCR
 
 $content = @"
 NEXT_PUBLIC_GOOGLE_CLIENT_ID=$Global:GOOGLE_CLIENT_ID
