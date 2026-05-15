@@ -38,7 +38,11 @@ jobs:
           set -e
           P="${{ secrets.GCP_PROJECT }}"
           R="southamerica-west1"
+          # ocr-api vive en us-central1 porque requiere GPU Nvidia L4 y esa GPU
+          # no esta disponible en southamerica-west1 (a 2026-05).
+          R_OCR="us-central1"
           resolve() { gcloud run services describe "$1" --region=$R --project=$P --format='value(status.url)' 2>/dev/null || echo ""; }
+          resolve_ocr() { gcloud run services describe "$1" --region=$R_OCR --project=$P --format='value(status.url)' 2>/dev/null || echo ""; }
           LOGIN=$(resolve login-service-dev)
           ESTUDIOS=$(resolve estudios-service-dev)
           INGESTION=$(resolve ingestion-service-dev)
@@ -46,7 +50,7 @@ jobs:
           DOCUMENTOS=$(resolve documentos-api-dev)
           SINTETIZADOR=$(resolve sintetizador-api-dev)
           VERIFICACION=$(resolve verificacion-legal-api-dev)
-          OCR=$(resolve ocr-api-dev)
+          OCR=$(resolve_ocr ocr-api-dev)
           echo "login=$LOGIN" >> $GITHUB_OUTPUT
           echo "estudios=$ESTUDIOS" >> $GITHUB_OUTPUT
           echo "ingestion=$INGESTION" >> $GITHUB_OUTPUT
