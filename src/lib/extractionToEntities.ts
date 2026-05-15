@@ -61,6 +61,9 @@ export function extraccionesToEntities(
       ent.fuente_texto = ev.fuente_texto;
       if (ev.page != null) ent.pagina = ev.page;
       if (ev.confianza_ocr != null) ent.confianza_ocr = ev.confianza_ocr;
+      // Bboxes solo vienen cuando fuente='ocr' y migración 009+ está
+      // aplicada. Cuando no, el visor cae al text-layer search clásico.
+      if (ev.bboxes && ev.bboxes.length > 0) ent.bboxes = ev.bboxes;
     }
   }
 

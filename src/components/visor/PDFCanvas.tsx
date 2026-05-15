@@ -18,6 +18,7 @@ import 'react-pdf/dist/Page/TextLayer.css';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 
 import EntityHighlight from './EntityHighlight';
+import BboxHighlight from './BboxHighlight';
 import type { Entity } from '@/data/entities';
 
 const Document = dynamic(() => import('react-pdf').then((m) => m.Document), { ssr: false });
@@ -50,6 +51,15 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
   const [zoomed, setZoomed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  // Dimensiones de cada pagina en PUNTOS PDF (1/72"). Las capturamos en
+  // onLoadSuccess de react-pdf y se las pasamos a BboxHighlight para
+  // mapear coords de las bboxes (en pt) a CSS px.
+  const [pagePtSizes, setPagePtSizes] = useState<Record<number, { ptWidth: number; ptHeight: number }>>({});
+  // Ancho CSS real de cada pagina renderizada. Cuando zoom != 1 o el
+  // contenedor cambia, este valor varia. Lo medimos con ResizeObserver
+  // sobre el div de la pagina.
+  const [pageCssWidths, setPageCssWidths] = useState<Record<number, number>>({});
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
 
   // Resize observer para ajustar el ancho de las páginas
   useEffect(() => {
@@ -69,6 +79,39 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
   }, []);
 
   const onLoadSuccess = ({ numPages: n }: { numPages: number }) => setNumPages(n);
+
+  // Captura el tamaño real de la pagina en puntos PDF cuando react-pdf la
+  // carga. `page.view = [x0, y0, x1, y1]` en pdf units (= puntos).
+  // Origen bottom-left en PDF pero solo usamos el delta (width/height),
+  // que es invariante al origen.
+  const handlePageLoadSuccess = useCallback(
+    (pageNumber: number, page: { view: [number, number, number, number] }) => {
+      const ptWidth = page.view[2] - page.view[0];
+      const ptHeight = page.view[3] - page.view[1];
+      setPagePtSizes((prev) => (
+        prev[pageNumber]?.ptWidth === ptWidth ? prev : { ...prev, [pageNumber]: { ptWidth, ptHeight } }
+      ));
+    },
+    [],
+  );
+
+  // ResizeObserver sobre cada pagina para tener el ancho CSS real cuando
+  // hay zoom o el contenedor cambia.
+  useEffect(() => {
+    if (numPages === 0) return;
+    const observers: ResizeObserver[] = [];
+    pageRefs.current.forEach((el, pageNumber) => {
+      const ro = new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const w = entry.contentRect.width;
+          setPageCssWidths((prev) => (prev[pageNumber] === w ? prev : { ...prev, [pageNumber]: w }));
+        }
+      });
+      ro.observe(el);
+      observers.push(ro);
+    });
+    return () => observers.forEach((ro) => ro.disconnect());
+  }, [numPages, scale, zoomed, containerWidth]);
 
   const handleHighlightPosition = useCallback(
     (entityId: string, pageNumber: number, y: number) => {
@@ -169,6 +212,10 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
                   id={`${PAGE_ID_PREFIX}-${pageNumber}`}
                   className="relative shadow-xl"
                   style={{ background: 'white' }}
+                  ref={(el) => {
+                    if (el) pageRefs.current.set(pageNumber, el);
+                    else pageRefs.current.delete(pageNumber);
+                  }}
                 >
                   <Page
                     pageNumber={pageNumber}
@@ -176,6 +223,7 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
                     width={zoomed ? undefined : containerWidth || undefined}
                     renderTextLayer
                     renderAnnotationLayer={false}
+                    onLoadSuccess={(page) => handlePageLoadSuccess(pageNumber, page as unknown as { view: [number, number, number, number] })}
                   />
                   <EntityHighlight
                     pageNumber={pageNumber}
@@ -184,6 +232,15 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
                     activeEntityId={activeEntityId}
                     onHighlightPosition={handleHighlightPosition}
                     onEntityClick={onEntityClick}
+                  />
+                  <BboxHighlight
+                    pageNumber={pageNumber}
+                    entities={allEntities}
+                    activeEntityId={activeEntityId}
+                    pageWidthPt={pagePtSizes[pageNumber]?.ptWidth}
+                    pageCssWidth={pageCssWidths[pageNumber]}
+                    onEntityClick={onEntityClick}
+                    onHighlightPosition={handleHighlightPosition}
                   />
                 </div>
               );
