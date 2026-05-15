@@ -22,7 +22,7 @@ import { use, useEffect, useMemo, useState, useCallback } from 'react';
 import Link from 'next/link';
 import {
   ArrowLeft, CheckCircle2, AlertTriangle, FileSearch, Loader2,
-  ScanLine, FileText, Clock, AlertOctagon,
+  ScanLine, FileText, Clock, AlertOctagon, RefreshCw,
 } from 'lucide-react';
 
 import Navbar from '@/components/layout/Navbar';
@@ -55,6 +55,8 @@ export default function VisorDocumento({ params }: PageProps) {
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
   const [ocrRunning, setOcrRunning] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
+  const [extractRunning, setExtractRunning] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
 
   // Entities enriquecidas con la evidencia (badge OCR cuando aplica).
   const entities = useMemo(
@@ -137,13 +139,28 @@ export default function VisorDocumento({ params }: PageProps) {
     setActiveEntityId((prev) => (prev === entityId ? null : entityId));
   }, []);
 
-  // Manual OCR — gatilla ocr-api directamente, y a continuacion
-  // re-dispara la extraccion via estudios-service para que langextract
-  // procese el .md OCR y persista las evidencias con bboxes. El browser
-  // espera ambos pasos secuenciales (~30-90s total, depende de cold-start).
-  // Despues refrescamos archivo + transcript + evidencia.
+  // Manual OCR — gatilla ocr-api y a continuacion re-dispara la extraccion
+  // via estudios-service para que langextract procese el .md OCR y persista
+  // evidencias con bboxes. El browser espera ambos pasos (~30-90s total).
+  //
+  // Si el archivo YA tiene OCR (estado_ocr='listo'), confirma con el usuario
+  // antes de re-procesar — re-OCR borra la transcripcion anterior, la
+  // extraccion y todas las evidencias asociadas.
   const handleManualOcr = useCallback(async () => {
     if (!archivo || ocrRunning) return;
+    // Confirmacion explicita cuando se va a sobreescribir trabajo previo.
+    if (archivo.estado_ocr === 'listo') {
+      const ok = window.confirm(
+        'El OCR ya está hecho para este archivo.\n\n' +
+        'Re-procesar va a:\n' +
+        '  • Sobrescribir la transcripción OCR anterior\n' +
+        '  • Borrar la extracción de campos y todas sus evidencias\n' +
+        '  • Re-correr Surya OCR sobre el PDF (~30-60s)\n' +
+        '  • Re-correr langextract sobre el OCR nuevo (~10-30s)\n\n' +
+        '¿Continuar?'
+      );
+      if (!ok) return;
+    }
     setOcrRunning(true);
     setOcrError(null);
     // Reflejo optimista en el header para que el chip cambie a 'OCR en curso'.
@@ -156,7 +173,7 @@ export default function VisorDocumento({ params }: PageProps) {
       //    dt_extraccion_evidencia con bboxes. Solo intenta si el archivo
       //    ya tiene clasificacion + aprobado (requisito del endpoint).
       //    Si falla, no es bloqueante — el panel OCR igual se muestra y
-      //    el letrado puede reintentar manualmente con "Reprocesar".
+      //    el letrado puede reintentar con el boton de extraccion manual.
       try {
         await reprocesarArchivo(folio, archivo.id_archivo);
       } catch (extractErr) {
@@ -196,10 +213,66 @@ export default function VisorDocumento({ params }: PageProps) {
     }
   }, [archivo, folio, ocrRunning]);
 
+  // Re-procesar SOLO la extraccion (langextract sobre el texto actual, ya
+  // sea pdf_text o el .md del OCR). No re-corre OCR. Util cuando:
+  //  - El archivo es pdf_text y nunca se extrajo
+  //  - Cambio el prompt/extractor y queremos re-correr sin tocar OCR
+  //  - La extraccion previa fallo o el letrado vio resultados raros
+  //
+  // Si ya hay extraccion previa (estado_procesamiento='procesado') pide
+  // confirmacion porque borra dt_extraccion + dt_extraccion_evidencia.
+  const handleManualExtract = useCallback(async () => {
+    if (!archivo || extractRunning) return;
+    if (archivo.estado_procesamiento === 'procesado') {
+      const ok = window.confirm(
+        'Este archivo ya está procesado.\n\n' +
+        'Re-procesar va a:\n' +
+        '  • Borrar la extracción de campos actual\n' +
+        '  • Borrar todas las evidencias (highlights del visor)\n' +
+        '  • Re-correr langextract con el texto vigente (~10-30s)\n\n' +
+        'La transcripción OCR (si existe) NO se toca.\n\n' +
+        '¿Continuar?'
+      );
+      if (!ok) return;
+    }
+    setExtractRunning(true);
+    setExtractError(null);
+    try {
+      await reprocesarArchivo(folio, archivo.id_archivo);
+      const fresh = await getArchivo(folio, archivo.id_archivo);
+      setArchivo(fresh);
+      if (fresh.extracciones.length > 0) {
+        try {
+          const arrs = await Promise.all(
+            fresh.extracciones.map((ext) =>
+              getEvidencia(ext.id_extraccion).catch(() => [] as EvidenciaItem[]),
+            ),
+          );
+          setEvidencia(arrs.flat());
+        } catch (err) {
+          console.warn('Evidencia no disponible tras re-procesar:', err);
+        }
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setExtractError(msg);
+    } finally {
+      setExtractRunning(false);
+    }
+  }, [archivo, folio, extractRunning]);
+
+  // OCR puede correrse SIEMPRE excepto si esta corriendo ahora mismo.
+  // Cuando estado_ocr='listo' el handler pide confirmacion (re-OCR).
   const canRunOcr =
     !!archivo && !ocrRunning &&
-    archivo.estado_ocr !== 'procesando' &&
-    archivo.estado_ocr !== 'listo';
+    archivo.estado_ocr !== 'procesando';
+
+  // Extraccion requiere clasificacion (sin tipo no hay extractor). El
+  // endpoint reprocesarArchivo tambien valida que este aprobado pero
+  // dejamos que la API lo reporte si falla — UX clara via toast.
+  const canRunExtract =
+    !!archivo && !extractRunning &&
+    !!archivo.id_clasificacion;
 
   // Loading inicial
   if (loading && !archivo) {
@@ -291,17 +364,51 @@ export default function VisorDocumento({ params }: PageProps) {
                 ocrError
                   ? `Error previo: ${ocrError}`
                   : archivo.estado_ocr === 'listo'
-                    ? 'El OCR ya está hecho'
-                    : 'Procesa este documento con OCR'
+                    ? 'Re-correr Surya OCR (borra transcripción y extracción previas, pide confirmación)'
+                    : 'Procesa este documento con Surya OCR + extracción automática'
               }
               className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {ocrRunning ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.5} />
+              ) : archivo.estado_ocr === 'listo' ? (
+                <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.5} />
               ) : (
                 <ScanLine className="w-3.5 h-3.5" strokeWidth={1.5} />
               )}
-              {ocrRunning ? 'Procesando OCR…' : 'Procesar OCR'}
+              {ocrRunning
+                ? 'Procesando OCR…'
+                : archivo.estado_ocr === 'listo'
+                  ? 'Re-OCR'
+                  : 'Procesar OCR'}
+            </button>
+            <button
+              type="button"
+              onClick={handleManualExtract}
+              disabled={!canRunExtract}
+              title={
+                extractError
+                  ? `Error previo: ${extractError}`
+                  : !archivo.id_clasificacion
+                    ? 'Falta clasificar este documento antes de extraer'
+                    : archivo.estado_procesamiento === 'procesado'
+                      ? 'Re-procesar extracción (borra evidencias previas, pide confirmación)'
+                      : 'Procesa los campos del documento con langextract'
+              }
+              className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {extractRunning ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" strokeWidth={1.5} />
+              ) : archivo.estado_procesamiento === 'procesado' ? (
+                <RefreshCw className="w-3.5 h-3.5" strokeWidth={1.5} />
+              ) : (
+                <FileText className="w-3.5 h-3.5" strokeWidth={1.5} />
+              )}
+              {extractRunning
+                ? 'Procesando…'
+                : archivo.estado_procesamiento === 'procesado'
+                  ? 'Re-procesar'
+                  : 'Procesar extracción'}
             </button>
             <button className="btn-ghost inline-flex items-center gap-2 px-4 py-2 text-[11px] uppercase tracking-[0.14em] rounded-[2px]" disabled>
               <AlertTriangle className="w-3.5 h-3.5" strokeWidth={1.5} /> Observar
@@ -313,6 +420,18 @@ export default function VisorDocumento({ params }: PageProps) {
         </div>
       </header>
 
+      {extractError && (
+        <div className="bg-[#FBE4E4] border-b border-[#E5A8A8] px-6 lg:px-10 py-2 text-[12px] text-[#7E1F1F] flex items-center gap-2">
+          <AlertOctagon className="w-3.5 h-3.5" strokeWidth={1.5} />
+          <span>Error al re-procesar extracción: {extractError}</span>
+          <button
+            onClick={() => setExtractError(null)}
+            className="ml-auto text-[11px] uppercase tracking-[0.14em] hover:text-[#5A1414]"
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
       {ocrError && (
         <div className="bg-[#FBE4E4] border-b border-[#E5A8A8] px-6 lg:px-10 py-2 text-[12px] text-[#7E1F1F] flex items-center gap-2">
           <AlertOctagon className="w-3.5 h-3.5" strokeWidth={1.5} />
