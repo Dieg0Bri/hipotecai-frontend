@@ -32,7 +32,7 @@ import EntityPanel from '@/components/visor/EntityPanel';
 import OcrTranscriptPanel from '@/components/visor/OcrTranscriptPanel';
 import {
   getArchivo, getSignedDownloadUrl, getOcrTranscript, getEvidencia,
-  triggerManualOcr,
+  triggerManualOcr, reprocesarArchivo,
   type ArchivoConExtracciones, type OcrTranscript, type EvidenciaItem,
   type EstadoProcesamiento,
 } from '@/lib/estudio';
@@ -137,8 +137,11 @@ export default function VisorDocumento({ params }: PageProps) {
     setActiveEntityId((prev) => (prev === entityId ? null : entityId));
   }, []);
 
-  // Manual OCR — gatilla ocr-api directamente. Es síncrono y puede demorar
-  // varios segundos por página; refrescamos archivo + transcript al volver.
+  // Manual OCR — gatilla ocr-api directamente, y a continuacion
+  // re-dispara la extraccion via estudios-service para que langextract
+  // procese el .md OCR y persista las evidencias con bboxes. El browser
+  // espera ambos pasos secuenciales (~30-90s total, depende de cold-start).
+  // Despues refrescamos archivo + transcript + evidencia.
   const handleManualOcr = useCallback(async () => {
     if (!archivo || ocrRunning) return;
     setOcrRunning(true);
@@ -146,7 +149,21 @@ export default function VisorDocumento({ params }: PageProps) {
     // Reflejo optimista en el header para que el chip cambie a 'OCR en curso'.
     setArchivo((prev) => prev ? { ...prev, estado_ocr: 'procesando' } : prev);
     try {
+      // 1) OCR: Surya sobre el PDF → .md en GCS + dt_ocr_documento/pagina
       await triggerManualOcr(archivo.id_archivo, archivo.gcs_path);
+
+      // 2) Extraccion: langextract sobre el .md del OCR → dt_extraccion +
+      //    dt_extraccion_evidencia con bboxes. Solo intenta si el archivo
+      //    ya tiene clasificacion + aprobado (requisito del endpoint).
+      //    Si falla, no es bloqueante — el panel OCR igual se muestra y
+      //    el letrado puede reintentar manualmente con "Reprocesar".
+      try {
+        await reprocesarArchivo(folio, archivo.id_archivo);
+      } catch (extractErr) {
+        console.warn('Extraccion post-OCR fallo (no bloqueante):', extractErr);
+      }
+
+      // 3) Refrescar archivo + transcript + evidencia con el estado nuevo.
       const fresh = await getArchivo(folio, archivo.id_archivo);
       setArchivo(fresh);
       if (fresh.fuente_extraccion === 'ocr' && fresh.estado_ocr === 'listo') {
@@ -155,6 +172,19 @@ export default function VisorDocumento({ params }: PageProps) {
           if (t.documento) setOcr(t);
         } catch (err) {
           console.warn('OCR transcript no disponible tras manual:', err);
+        }
+      }
+      // Re-fetch de evidencia para que aparezcan los nuevos campos con bboxes.
+      if (fresh.extracciones.length > 0) {
+        try {
+          const arrs = await Promise.all(
+            fresh.extracciones.map((ext) =>
+              getEvidencia(ext.id_extraccion).catch(() => [] as EvidenciaItem[]),
+            ),
+          );
+          setEvidencia(arrs.flat());
+        } catch (err) {
+          console.warn('Evidencia no disponible tras manual:', err);
         }
       }
     } catch (err: unknown) {

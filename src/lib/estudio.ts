@@ -331,6 +331,12 @@ export interface EvidenciaItem {
   ocr_md_uri: string | null;
   ocr_pagina_char_start: number | null;
   ocr_pagina_char_end: number | null;
+  /** Bboxes en PUNTOS PDF de las líneas OCR que cubren este span.
+   *  Array de [x0, y0, x1, y1]. Una entidad puede partirse en varias
+   *  líneas (nombre largo a 2 renglones, etc.) por eso es lista. NULL
+   *  cuando fuente_texto='pdf_text' o evidencia legacy previa a
+   *  migración 009. */
+  bboxes: number[][] | null;
 }
 
 export async function getEvidencia(idExtraccion: number): Promise<EvidenciaItem[]> {

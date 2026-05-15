@@ -72,6 +72,10 @@ export default function EntityHighlight({
     const norm = normalize(fullText);
 
     for (const entity of entities) {
+      // Entities OCR con bboxes geometricas las pinta BboxHighlight, no este
+      // componente. Esto evita doble render en PDFs escaneados con algo de
+      // text-layer residual (sellos OCR-eados pre-existentes, etc.).
+      if (entity.bboxes && entity.bboxes.length > 0) continue;
       if (!entity.text) continue;
       const target = normalize(entity.text.trim());
       if (!target) continue;

@@ -51,6 +51,10 @@ export interface Entity {
   pagina?: number;
   /** Confianza del modelo OCR sobre el span — solo para fuente_texto='ocr'. */
   confianza_ocr?: number;
+  /** Bboxes en PUNTOS PDF cuando fuente='ocr'. Cuando existe, el visor
+   *  los dibuja directo sobre el canvas sin buscar el texto en el
+   *  text-layer (necesario para escaneos puros sin texto seleccionable). */
+  bboxes?: number[][];
 }
 
 /* ─────────────────── Categorías visuales ─────────────────── */
