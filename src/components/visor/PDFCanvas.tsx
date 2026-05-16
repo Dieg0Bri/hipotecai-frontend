@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import dynamic from 'next/dynamic';
-import { Loader2, ZoomIn, ZoomOut, Maximize2, Search, X } from 'lucide-react';
+import { Loader2, ZoomIn, ZoomOut, Maximize2, Search, X, Plus } from 'lucide-react';
 
 // Estilos del text layer de pdf.js — sin esto el highlight no encuentra spans
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -20,6 +20,9 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 import EntityHighlight from './EntityHighlight';
 import BboxHighlight from './BboxHighlight';
 import LeaderLine from './LeaderLine';
+import RectDrawer from './RectDrawer';
+import FieldPickerModal, { type FieldOption } from './FieldPickerModal';
+import { useAnchorDraft } from './useAnchorDraft';
 import type { Entity } from '@/data/entities';
 
 const Document = dynamic(() => import('react-pdf').then((m) => m.Document), { ssr: false });
@@ -40,11 +43,32 @@ interface Props {
   onEntityFound?: (entityId: string, pageNumber: number, y: number) => void;
   /** Click sobre un highlight del PDF → selecciona la entidad en el panel */
   onEntityClick?: (entityId: string) => void;
+  /** Habilita el modo "agregar anchor manual". Si se pasan ambos callbacks,
+   *  aparece el botón "+ Anchor" en la toolbar. El padre debe proveer:
+   *  - availableFields: las opciones para el modal de elegir campo (deduce
+   *    de las Entity actuales en la mayoría de casos)
+   *  - onCreateAnchor: hace POST createAnchor y actualiza el estado de
+   *    anchors. Se llama después de que el usuario eligió el campo. */
+  availableFields?: FieldOption[];
+  onCreateAnchor?: (input: {
+    campo: string;
+    page: number;
+    snippet: string | null;
+    fuente_texto: 'pdf_text' | 'ocr';
+    bboxes: number[][];
+  }) => Promise<void> | void;
 }
 
 const PAGE_ID_PREFIX = 'expediente-page';
 
-export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityFound, onEntityClick }: Props) {
+export default function PDFCanvas({
+  fileUrl, entities, activeEntityId, onEntityFound, onEntityClick,
+  availableFields, onCreateAnchor,
+}: Props) {
+  // Modo "agregar anchor manual": ver useAnchorDraft.ts. Solo se activa si
+  // el padre proveyó onCreateAnchor — sin eso el botón ni se muestra.
+  const anchorDraft = useAnchorDraft();
+  const canAddAnchor = !!onCreateAnchor;
   const containerRef = useRef<HTMLDivElement>(null);
   const [numPages, setNumPages] = useState(0);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -114,6 +138,71 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
     return () => observers.forEach((ro) => ro.disconnect());
   }, [numPages, scale, zoomed, containerWidth]);
 
+  // Captura selección de texto sobre el text-layer cuando el modo "agregar
+  // anchor" está activo. Se dispara en mouseup global (el dragging completa
+  // ahí) y filtra: solo cuando la selección está dentro de un span del
+  // text-layer de alguna página renderizada.
+  useEffect(() => {
+    if (!anchorDraft.active) return;
+    const onMouseUp = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+      const range = sel.getRangeAt(0);
+      const startEl = (range.startContainer.parentElement
+        ?? (range.startContainer as Element));
+      if (!startEl?.closest?.('.react-pdf__Page__textContent')) return;
+      const pageEl = (startEl as Element).closest('[id^="expediente-page-"]') as HTMLElement | null;
+      if (!pageEl) return;
+      const m = pageEl.id.match(/-(\d+)$/);
+      if (!m) return;
+      const pageNumber = parseInt(m[1], 10);
+      const widthPt = pagePtSizes[pageNumber]?.ptWidth;
+      const cssWidth = pageCssWidths[pageNumber];
+      if (!widthPt || !cssWidth) return;
+      const scale = widthPt / cssWidth;
+      const pageRect = pageEl.getBoundingClientRect();
+      const bboxes = Array.from(range.getClientRects())
+        .filter((r) => r.width > 0 && r.height > 0)
+        .map<[number, number, number, number]>((r) => [
+          (r.left - pageRect.left) * scale,
+          (r.top - pageRect.top) * scale,
+          (r.right - pageRect.left) * scale,
+          (r.bottom - pageRect.top) * scale,
+        ]);
+      if (bboxes.length === 0) return;
+      anchorDraft.capture({
+        page: pageNumber,
+        snippet: sel.toString().trim(),
+        bboxes,
+        fuente_texto: 'pdf_text',
+      });
+      sel.removeAllRanges();
+    };
+    window.addEventListener('mouseup', onMouseUp);
+    return () => window.removeEventListener('mouseup', onMouseUp);
+  }, [anchorDraft, pagePtSizes, pageCssWidths]);
+
+  // Si el padre eliminó el callback (ej. el archivo no tiene id_extraccion
+  // todavía), forzamos salir del modo.
+  useEffect(() => {
+    if (!canAddAnchor && anchorDraft.active) anchorDraft.exit();
+  }, [canAddAnchor, anchorDraft]);
+
+  const handleConfirmField = useCallback(async (campo: string) => {
+    if (!anchorDraft.draft || !onCreateAnchor) return;
+    const d = anchorDraft.draft;
+    await onCreateAnchor({
+      campo,
+      page: d.page,
+      snippet: d.snippet || null,
+      fuente_texto: d.fuente_texto,
+      bboxes: d.bboxes,
+    });
+    // Tras un POST exitoso salimos del modo completo — si el abogado quiere
+    // agregar otro, vuelve a activar el toggle.
+    anchorDraft.exit();
+  }, [anchorDraft, onCreateAnchor]);
+
   const handleHighlightPosition = useCallback(
     (entityId: string, pageNumber: number, y: number) => {
       onEntityFound?.(entityId, pageNumber, y);
@@ -181,10 +270,40 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
         <button onClick={() => setSearchOpen((v) => !v)} className={`p-2 rounded-[2px] ${searchOpen ? 'bg-[#A47148]' : 'hover:bg-[#16315A]'}`} aria-label="Buscar">
           <Search className="w-4 h-4 text-[#F8F5EE]" strokeWidth={1.5} />
         </button>
+        {canAddAnchor && (
+          <button
+            onClick={() => anchorDraft.active ? anchorDraft.exit() : anchorDraft.start()}
+            className={`p-2 rounded-[2px] ${anchorDraft.active ? 'bg-[#A47148]' : 'hover:bg-[#16315A]'}`}
+            aria-label={anchorDraft.active ? 'Cancelar agregar anchor' : 'Agregar anchor manual'}
+            title={anchorDraft.active
+              ? 'Cancelar: salir del modo agregar anchor'
+              : 'Agregar anchor: seleccioná texto o dibujá un rect sobre el documento'}
+          >
+            <Plus className="w-4 h-4 text-[#F8F5EE]" strokeWidth={1.5} />
+          </button>
+        )}
         <div className="text-[10px] tabular text-center text-[#CAB994] mt-1 px-1">
           {zoomed ? `${Math.round(scale * 100)}%` : 'Ajus.'}
         </div>
       </div>
+
+      {/* Banner instructivo cuando el modo agregar anchor está activo. Vive
+          sobre el documento, no sobre la toolbar, para que el abogado lo
+          vea sin perder el foco del PDF. */}
+      {anchorDraft.active && !anchorDraft.draft && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-4 py-2 bg-[#0B1F3A] text-[#F8F5EE] text-[12px] rounded-[2px] shadow-lg flex items-center gap-2">
+          <span className="smallcaps text-[#CAB994]">Modo agregar</span>
+          <span>·</span>
+          <span>Seleccioná texto o dibujá un rectángulo</span>
+          <button
+            onClick={anchorDraft.exit}
+            className="ml-2 text-[#CAB994] hover:text-white"
+            aria-label="Salir del modo"
+          >
+            <X className="w-3.5 h-3.5" strokeWidth={1.5} />
+          </button>
+        </div>
+      )}
 
       {/* Document */}
       <div ref={containerRef} className="flex-1 overflow-auto p-6">
@@ -243,6 +362,24 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
                     onEntityClick={onEntityClick}
                     onHighlightPosition={handleHighlightPosition}
                   />
+                  <RectDrawer
+                    pageNumber={pageNumber}
+                    pageWidthPt={pagePtSizes[pageNumber]?.ptWidth}
+                    pageCssWidth={pageCssWidths[pageNumber]}
+                    enabled={anchorDraft.active}
+                    onCapture={({ page, bbox, snippet }) => {
+                      anchorDraft.capture({
+                        page,
+                        snippet,
+                        bboxes: [bbox],
+                        // Rect dibujado a mano → marcamos como 'ocr' para
+                        // ser consistentes con anchors que vienen de OCR.
+                        // Si la página era pdf_text, el abogado pudo haber
+                        // usado selección de texto en lugar de dibujar.
+                        fuente_texto: 'ocr',
+                      });
+                    }}
+                  />
                 </div>
               );
             })}
@@ -253,6 +390,18 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
       {/* Línea de conexión bbox ↔ panel. Vive a nivel de viewport para que
           su sistema de coordenadas no dependa del scroll del PDF. */}
       <LeaderLine activeEntityId={activeEntityId} />
+
+      {/* Modal de elección de campo cuando hay un draft pendiente. */}
+      {anchorDraft.draft && onCreateAnchor && (
+        <FieldPickerModal
+          snippet={anchorDraft.draft.snippet}
+          page={anchorDraft.draft.page}
+          fuenteTexto={anchorDraft.draft.fuente_texto}
+          fields={availableFields ?? []}
+          onCancel={anchorDraft.dismissDraft}
+          onConfirm={handleConfirmField}
+        />
+      )}
     </div>
   );
 }

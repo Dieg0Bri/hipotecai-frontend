@@ -32,12 +32,13 @@ import EntityPanel from '@/components/visor/EntityPanel';
 import OcrTranscriptPanel from '@/components/visor/OcrTranscriptPanel';
 import {
   getArchivo, getSignedDownloadUrl, getOcrTranscript,
-  listAnchors, confirmAnchor, rejectAnchor, deleteAnchor,
+  listAnchors, createAnchor, confirmAnchor, rejectAnchor, deleteAnchor,
   triggerManualOcr, reprocesarArchivo,
   type ArchivoConExtracciones, type OcrTranscript, type Anchor,
   type EstadoProcesamiento,
 } from '@/lib/estudio';
 import { extraccionesToEntities } from '@/lib/extractionToEntities';
+import type { FieldOption } from '@/components/visor/FieldPickerModal';
 
 interface PageProps {
   params: Promise<{ folio: string; id: string }>;
@@ -167,6 +168,46 @@ export default function VisorDocumento({ params }: PageProps) {
       console.error('rejectAnchor failed', err);
     }
   }, [replaceAnchor]);
+
+  // Campos disponibles para vincular un anchor manual — derivados de las
+  // Entity actuales (dedupe por class). Si el doc todavía no tiene
+  // extracción, queda vacío y el modal solo ofrece la opción "texto libre".
+  const availableFields: FieldOption[] = useMemo(() => {
+    const seen = new Map<string, FieldOption>();
+    for (const e of entities) {
+      if (!seen.has(e.class)) {
+        seen.set(e.class, { class: e.class, label: e.label, category: e.category });
+      }
+    }
+    return Array.from(seen.values());
+  }, [entities]);
+
+  // id_extraccion sobre el que se crean los anchors manuales. Asumimos UN
+  // archivo → UNA extracción (caso normal en hipotecai). Si hubiera varias
+  // futuras extracciones por archivo, habría que dejar al abogado elegir.
+  const idExtraccionActiva = useMemo(
+    () => archivo?.extracciones[0]?.id_extraccion ?? null,
+    [archivo],
+  );
+
+  const handleCreateAnchor = useCallback(async (input: {
+    campo: string;
+    page: number;
+    snippet: string | null;
+    fuente_texto: 'pdf_text' | 'ocr';
+    bboxes: number[][];
+  }) => {
+    if (!idExtraccionActiva) {
+      console.warn('No hay id_extraccion activa — no se puede crear anchor');
+      return;
+    }
+    try {
+      const newAnchor = await createAnchor(idExtraccionActiva, input);
+      setAnchors((prev) => [...prev, newAnchor]);
+    } catch (err) {
+      console.error('createAnchor failed', err);
+    }
+  }, [idExtraccionActiva]);
 
   const handleDeleteAnchor = useCallback(async (anchorId: number) => {
     try {
@@ -501,6 +542,8 @@ export default function VisorDocumento({ params }: PageProps) {
               activeEntityId={activeEntityId}
               onEntityFound={handleEntityFound}
               onEntityClick={handleEntityClick}
+              availableFields={availableFields}
+              onCreateAnchor={idExtraccionActiva ? handleCreateAnchor : undefined}
             />
           ) : (
             <div className="h-full flex items-center justify-center bg-[#1A1A1A] text-[#CAB994] font-serif italic gap-3">
