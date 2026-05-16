@@ -161,6 +161,7 @@ export default function EntityHighlight({
             key={`${r.entityId}-${i}`}
             type="button"
             data-entity-id={r.entityId}
+            data-bbox-marker="textlayer"
             title={tooltip}
             onClick={(ev) => {
               ev.stopPropagation();

@@ -9,12 +9,12 @@
  *   · Valores no-resaltables (boolean, null, empty arrays, números puros sin contexto)
  *     se skip — solo lo que aparece como texto literal en el PDF se highlight-ea
  *
- * Si se pasa `evidencia`, cada Entity se enriquece con:
- *   - fuente_texto: 'pdf_text' | 'ocr'  → para badge "vía OCR" en el panel
- *   - pagina, confianza_ocr             → para sincronizar con el visor OCR
+ * Si se pasa `anchors`, cada Entity se enriquece con:
+ *   - anchors[]      → TODAS las ubicaciones del campo (auto + manual)
+ *   - fuente_texto, pagina, bboxes (derivados del primer anchor activo)
  */
-import type { EvidenciaItem, ExtraccionItem } from './estudio';
-import { categoryFor, labelFor, type Entity } from '@/data/entities';
+import type { Anchor, ExtraccionItem } from './estudio';
+import { categoryFor, labelFor, type Entity, type EntityAnchor } from '@/data/entities';
 
 /**
  * String mínimo para hacer match en el PDF (evita falsos positivos con textos
@@ -24,7 +24,7 @@ const MIN_TEXT_LEN = 3;
 
 export function extraccionesToEntities(
   extracciones: ExtraccionItem[],
-  evidencia?: EvidenciaItem[],
+  anchors?: Anchor[],
 ): Entity[] {
   const out: Entity[] = [];
 
@@ -35,8 +35,8 @@ export function extraccionesToEntities(
     }
   }
 
-  // Dedupe: si el mismo `text` aparece dos veces, mantenemos solo el primero
-  // (el highlight pintará todas las ocurrencias del texto en el PDF de todos modos).
+  // Dedupe por (class, text) — el highlight pintará todas las ocurrencias
+  // del texto en el PDF de todos modos cuando es match en text-layer.
   const seen = new Set<string>();
   const deduped = out.filter((e) => {
     const k = `${e.class}|${e.text.toLowerCase()}`;
@@ -45,29 +45,60 @@ export function extraccionesToEntities(
     return true;
   });
 
-  // Enriquecer con evidencia. Match por (class === campo) — la evidencia nos
-  // da `campo` que es el mismo identificador que extraction_class. Para
-  // claves anidadas (deslindes.norte) hacemos un fallback por substring.
-  if (evidencia && evidencia.length > 0) {
-    const byCampo = new Map<string, EvidenciaItem>();
-    for (const ev of evidencia) {
-      if (!ev.campo) continue;
-      // Si el mismo campo aparece varias veces (lista), usamos la primera.
-      if (!byCampo.has(ev.campo)) byCampo.set(ev.campo, ev);
+  // Enriquecer con anchors. Match por (class === campo). Una entidad puede
+  // tener varios anchors (auto del extractor + manuales del abogado) —
+  // todos se guardan en ent.anchors. Los campos derivados (pagina, bboxes,
+  // etc.) apuntan al PRIMER anchor activo para compat con código viejo
+  // que no itera anchors.
+  if (anchors && anchors.length > 0) {
+    const byCampo = new Map<string, Anchor[]>();
+    for (const a of anchors) {
+      if (!a.campo) continue;
+      if (a.estado === 'rechazado') continue;  // ocultos por default
+      const list = byCampo.get(a.campo);
+      if (list) list.push(a);
+      else byCampo.set(a.campo, [a]);
     }
     for (const ent of deduped) {
-      const ev = byCampo.get(ent.class);
-      if (!ev) continue;
-      ent.fuente_texto = ev.fuente_texto;
-      if (ev.page != null) ent.pagina = ev.page;
-      if (ev.confianza_ocr != null) ent.confianza_ocr = ev.confianza_ocr;
-      // Bboxes solo vienen cuando fuente='ocr' y migración 009+ está
-      // aplicada. Cuando no, el visor cae al text-layer search clásico.
-      if (ev.bboxes && ev.bboxes.length > 0) ent.bboxes = ev.bboxes;
+      const list = byCampo.get(ent.class);
+      if (!list || list.length === 0) continue;
+      // Orden: manual confirmado primero (lo que el abogado eligió),
+      // luego auto confirmado, luego propuestos. El "primer activo" que
+      // proyectamos a los campos derivados sigue ese orden.
+      const sorted = [...list].sort(orderAnchor);
+      ent.anchors = sorted.map(toEntityAnchor);
+      const first = sorted[0];
+      ent.fuente_texto = first.fuente_texto;
+      if (first.page != null) ent.pagina = first.page;
+      if (first.confianza_ocr != null) ent.confianza_ocr = first.confianza_ocr;
+      if (first.bboxes && first.bboxes.length > 0) ent.bboxes = first.bboxes;
     }
   }
 
   return deduped;
+}
+
+function orderAnchor(a: Anchor, b: Anchor): number {
+  // Manual confirmado > auto confirmado > manual propuesto > auto propuesto.
+  const score = (x: Anchor) =>
+    (x.origen === 'manual' ? 2 : 0) + (x.estado === 'confirmado' ? 1 : 0);
+  return score(b) - score(a);
+}
+
+function toEntityAnchor(a: Anchor): EntityAnchor {
+  return {
+    id_anchor: a.id_evidencia,
+    page: a.page,
+    char_start: a.char_start,
+    char_end: a.char_end,
+    snippet: a.snippet,
+    fuente_texto: a.fuente_texto,
+    bboxes: a.bboxes,
+    origen: a.origen,
+    estado: a.estado,
+    confianza_ocr: a.confianza_ocr,
+    creado_por: a.creado_por,
+  };
 }
 
 function pushEntities(
@@ -95,6 +126,7 @@ function pushEntities(
       label: prefix ? `${labelFor(prefix)} · ${labelFor(key)}` : labelFor(key),
       category: categoryFor(prefix || key),
       confidence,
+      id_extraccion: extId,
     });
     return;
   }
@@ -113,6 +145,7 @@ function pushEntities(
           label: labelFor(key),
           category: categoryFor(key),
           confidence,
+          id_extraccion: extId,
         });
       } else if (item && typeof item === 'object') {
         // Array de objetos (ej. hipotecas_vigentes: [{acreedor, foja, numero, anio}])
@@ -129,6 +162,7 @@ function pushEntities(
             category: categoryFor(key),
             confidence,
             attributes: stringifyAttrs(obj),
+            id_extraccion: extId,
           });
         }
         // También expandir subkeys textuales (foja, numero, etc.)

@@ -51,30 +51,58 @@ export default function BboxHighlight({
   onEntityClick,
   onHighlightPosition,
 }: Props) {
-  // Computo las cajas a renderizar. Solo entities cuya pagina coincida y
-  // que tengan bboxes (las pdf_text las maneja EntityHighlight).
+  // Computo las cajas a renderizar. Iteramos TODOS los anchors de cada
+  // entity (no solo el primero) — una entity puede tener un anchor 'auto'
+  // del extractor + uno 'manual' del abogado, y ambos se pintan. Filtramos
+  // los rechazados; el visor solo muestra activos.
   const rects = useMemo(() => {
     if (!pageWidthPt || !pageCssWidth || pageWidthPt <= 0) return [];
     const scale = pageCssWidth / pageWidthPt;
     const out: Array<{
       entityId: string;
+      anchorId: number;
       category: Entity['category'];
+      origen: 'auto' | 'manual';
+      estado: 'propuesto' | 'confirmado' | 'rechazado';
       x: number; y: number; width: number; height: number;
       tooltip: string;
     }> = [];
     for (const ent of entities) {
-      if (!ent.bboxes || ent.bboxes.length === 0) continue;
-      if (ent.pagina !== pageNumber) continue;
-      for (const [x0, y0, x1, y1] of ent.bboxes) {
-        out.push({
-          entityId: ent.id,
-          category: ent.category,
-          x: x0 * scale,
-          y: y0 * scale,
-          width: Math.max(1, (x1 - x0) * scale),
-          height: Math.max(1, (y1 - y0) * scale),
-          tooltip: `${ent.label} — ${ent.text}`,
-        });
+      // Fast-path retrocompat: cuando vienen ent.bboxes legacy (sin anchors[])
+      // los pintamos como un único anchor auto/propuesto.
+      const anchorsForEnt = ent.anchors ?? (
+        ent.bboxes && ent.bboxes.length > 0 && ent.pagina != null
+          ? [{
+              id_anchor: -1,
+              page: ent.pagina,
+              char_start: null, char_end: null, snippet: null,
+              fuente_texto: ent.fuente_texto ?? 'ocr',
+              bboxes: ent.bboxes,
+              origen: 'auto' as const,
+              estado: 'propuesto' as const,
+              confianza_ocr: ent.confianza_ocr ?? null,
+              creado_por: null,
+            }]
+          : []
+      );
+      for (const a of anchorsForEnt) {
+        if (a.estado === 'rechazado') continue;
+        if (!a.bboxes || a.bboxes.length === 0) continue;
+        if (a.page !== pageNumber) continue;
+        for (const [x0, y0, x1, y1] of a.bboxes) {
+          out.push({
+            entityId: ent.id,
+            anchorId: a.id_anchor,
+            category: ent.category,
+            origen: a.origen,
+            estado: a.estado,
+            x: x0 * scale,
+            y: y0 * scale,
+            width: Math.max(1, (x1 - x0) * scale),
+            height: Math.max(1, (y1 - y0) * scale),
+            tooltip: `${ent.label} — ${ent.text}${a.origen === 'manual' ? ' · manual' : ''}`,
+          });
+        }
       }
     }
     return out;
@@ -94,11 +122,19 @@ export default function BboxHighlight({
       {rects.map((r, i) => {
         const meta = CATEGORY_META[r.category];
         const isActive = r.entityId === activeEntityId;
+        // Diferenciamos visualmente:
+        //  - manual: borde sólido completo (no solo bottom) — "el abogado lo dibujó"
+        //  - auto propuesto: borde inferior punteado — "el modelo lo sugiere, pendiente"
+        //  - auto confirmado: borde inferior sólido — "validado por humano"
+        const isManual = r.origen === 'manual';
+        const isPropuesto = r.estado === 'propuesto';
         return (
           <button
-            key={`${r.entityId}-${i}`}
+            key={`${r.entityId}-${r.anchorId}-${i}`}
             type="button"
             data-entity-id={r.entityId}
+            data-anchor-id={r.anchorId}
+            data-bbox-marker="bbox"
             title={r.tooltip}
             onClick={(ev) => {
               ev.stopPropagation();
@@ -111,13 +147,15 @@ export default function BboxHighlight({
               width: r.width + 2,
               height: r.height + 2,
               background: meta.fill,
-              borderBottom: `2px solid ${meta.ink}`,
+              border: isManual ? `1.5px dashed ${meta.ink}` : 0,
+              borderBottom: isManual
+                ? `1.5px dashed ${meta.ink}`
+                : `2px ${isPropuesto ? 'dotted' : 'solid'} ${meta.ink}`,
               boxShadow: isActive
                 ? `0 0 0 2px ${meta.ink}, 0 0 0 4px rgba(255,255,255,0.65)`
                 : 'none',
-              opacity: isActive ? 0.95 : 0.85,
+              opacity: isActive ? 0.95 : (isPropuesto ? 0.70 : 0.85),
               padding: 0,
-              border: 0,
             }}
             aria-label={r.tooltip}
           />
