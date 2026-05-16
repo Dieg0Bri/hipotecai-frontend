@@ -149,7 +149,7 @@ export default function VisorDocumento({ params }: PageProps) {
     ));
   }, []);
 
-  const handleConfirmAnchor = useCallback(async (anchorId: number) => {
+  const handleConfirmAnchor = useCallback(async (anchorId: string) => {
     try {
       const updated = await confirmAnchor(anchorId);
       replaceAnchor(updated);
@@ -158,16 +158,16 @@ export default function VisorDocumento({ params }: PageProps) {
     }
   }, [replaceAnchor]);
 
-  const handleRejectAnchor = useCallback(async (anchorId: number) => {
+  const handleRejectAnchor = useCallback(async (anchorId: string) => {
     try {
-      const updated = await rejectAnchor(anchorId);
-      // El anchor sigue en BD con estado='rechazado'; el frontend lo filtra
-      // del display vía extractionToEntities (estado != 'rechazado').
-      replaceAnchor(updated);
+      // Migración 011: rechazar = borrar del blob. El backend devuelve
+      // {action: 'deleted'} y el frontend remueve la entry local.
+      await rejectAnchor(anchorId);
+      setAnchors((prev) => prev.filter((a) => a.id_evidencia !== anchorId));
     } catch (err) {
       console.error('rejectAnchor failed', err);
     }
-  }, [replaceAnchor]);
+  }, []);
 
   // Campos disponibles para vincular un anchor manual — derivados de las
   // Entity actuales (dedupe por class). Si el doc todavía no tiene
@@ -209,18 +209,11 @@ export default function VisorDocumento({ params }: PageProps) {
     }
   }, [idExtraccionActiva]);
 
-  const handleDeleteAnchor = useCallback(async (anchorId: number) => {
+  const handleDeleteAnchor = useCallback(async (anchorId: string) => {
     try {
-      const result = await deleteAnchor(anchorId);
-      if (result.action === 'deleted') {
-        setAnchors((prev) => prev.filter((a) => a.id_evidencia !== anchorId));
-      } else {
-        // action === 'rejected' — el anchor era 'auto', no se borra; queda
-        // soft-rejected. Re-leemos su estado actual.
-        setAnchors((prev) => prev.map((a) =>
-          a.id_evidencia === anchorId ? { ...a, estado: 'rechazado' as const } : a,
-        ));
-      }
+      // Migración 011: siempre hard-delete (sin distinción auto/manual).
+      await deleteAnchor(anchorId);
+      setAnchors((prev) => prev.filter((a) => a.id_evidencia !== anchorId));
     } catch (err) {
       console.error('deleteAnchor failed', err);
     }
