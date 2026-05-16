@@ -296,11 +296,17 @@ export async function triggerManualOcr(
   return json.data;
 }
 
-/** Pide a ocr-api un signed URL al .md y descarga el contenido. */
+/** Pide a ingestion-service un signed URL al .md y descarga el contenido.
+ *
+ * Mismo servicio que firma el PDF original — el manejo de archivos (PDF
+ * crudo y .md OCR derivado) está centralizado ahí, con tenant scoping vía
+ * dt_archivos. ocr-api (GPU L4) solo se invoca para GENERAR el .md, no
+ * para servirlo.
+ */
 export async function getOcrMarkdown(gcsUri: string): Promise<string> {
-  if (!API_URLS.ocr) throw new Error('NEXT_PUBLIC_API_OCR_URL no configurado');
+  if (!API_URLS.ingestion) throw new Error('NEXT_PUBLIC_API_INGESTION_URL no configurado');
   const sigRes = await authedFetch(
-    `${API_URLS.ocr}/ocr-document-url?gcs_uri=${encodeURIComponent(gcsUri)}`,
+    `${API_URLS.ingestion}/api-ingestion/upload/ocr-download-url?gcs_uri=${encodeURIComponent(gcsUri)}`,
   );
   if (!sigRes.ok) throw new Error(`getOcrMarkdown sign ${sigRes.status}`);
   const sigJson = (await sigRes.json()) as { data: { download_url: string } };
