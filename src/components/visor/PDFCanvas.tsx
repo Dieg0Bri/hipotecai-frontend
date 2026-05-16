@@ -19,6 +19,7 @@ import 'react-pdf/dist/Page/AnnotationLayer.css';
 
 import EntityHighlight from './EntityHighlight';
 import BboxHighlight from './BboxHighlight';
+import LeaderLine from './LeaderLine';
 import type { Entity } from '@/data/entities';
 
 const Document = dynamic(() => import('react-pdf').then((m) => m.Document), { ssr: false });
@@ -248,6 +249,10 @@ export default function PDFCanvas({ fileUrl, entities, activeEntityId, onEntityF
           </Document>
         </div>
       </div>
+
+      {/* Línea de conexión bbox ↔ panel. Vive a nivel de viewport para que
+          su sistema de coordenadas no dependa del scroll del PDF. */}
+      <LeaderLine activeEntityId={activeEntityId} />
     </div>
   );
 }

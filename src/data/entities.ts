@@ -23,6 +23,32 @@ export type EntityCategory =
   | 'normativa'         // zonificación, usos permitidos, coeficientes
   | 'otro';
 
+/** Un anchor representa UNA ubicación concreta del campo en el documento.
+ *  Una Entity puede tener N anchors (el extractor propuso uno + el abogado
+ *  agregó otros en otras páginas). El visor dibuja TODOS los anchors
+ *  visibles (estado != 'rechazado') y el panel muestra acciones por anchor.
+ *
+ *  Coordenadas:
+ *  - `char_start`/`char_end` son offsets GLOBALES del texto ensamblado por
+ *    el extractor (concat de todas las páginas). El frontend solo los
+ *    usa como id de span — para pintar usa `bboxes` (OCR) o re-busca el
+ *    `snippet` en el text-layer (pdf_text).
+ *  - `bboxes` están en PUNTOS PDF (1/72") con origen top-left.
+ */
+export interface EntityAnchor {
+  id_anchor: number;
+  page: number | null;
+  char_start: number | null;
+  char_end: number | null;
+  snippet: string | null;
+  fuente_texto: 'pdf_text' | 'ocr';
+  bboxes: number[][] | null;
+  origen: 'auto' | 'manual';
+  estado: 'propuesto' | 'confirmado' | 'rechazado';
+  confianza_ocr: number | null;
+  creado_por: string | null;
+}
+
 export interface Entity {
   /** Identificador único dentro del documento (auto-generado) */
   id: string;
@@ -42,18 +68,20 @@ export interface Entity {
   char_interval?: { start: number; end: number };
   /** Marca si el campo fue editado por el letrado */
   edited?: boolean;
+  /** id_extraccion al que pertenece — la UI lo necesita para crear anchors
+   *  nuevos vía POST /extracciones/{id}/anchors. */
+  id_extraccion?: number;
 
-  /* ─── Trazabilidad de evidencia (migración 006) ─── */
-  /** De dónde vino el texto que respalda este campo. UI pinta badge "vía OCR"
-   *  cuando es 'ocr' para que el letrado sepa que es transcripción de modelo. */
+  /* ─── Trazabilidad multi-anchor (migración 010) ─── */
+  /** Ubicaciones de este campo en el documento (auto + manual). */
+  anchors?: EntityAnchor[];
+
+  /* ─── Campos derivados del primer anchor activo (compat) ───
+   * Mantenidos para no romper código existente que lee ent.pagina/ent.bboxes
+   * sin iterar anchors. Apuntan al PRIMER anchor con estado != 'rechazado'. */
   fuente_texto?: 'pdf_text' | 'ocr';
-  /** Página del documento donde se ancla la evidencia. */
   pagina?: number;
-  /** Confianza del modelo OCR sobre el span — solo para fuente_texto='ocr'. */
   confianza_ocr?: number;
-  /** Bboxes en PUNTOS PDF cuando fuente='ocr'. Cuando existe, el visor
-   *  los dibuja directo sobre el canvas sin buscar el texto en el
-   *  text-layer (necesario para escaneos puros sin texto seleccionable). */
   bboxes?: number[][];
 }
 

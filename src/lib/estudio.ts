@@ -311,10 +311,25 @@ export async function getOcrMarkdown(gcsUri: string): Promise<string> {
   return dlRes.text();
 }
 
-/* ─────────────────────── Evidencia ─────────────────────── */
+/* ─────────────────────── Anchors / Evidencia ───────────────────────
+ *
+ * "Anchor" = vínculo navegable entre un campo extraído y su ubicación en
+ * el documento. El extractor genera anchors `origen='auto'` con
+ * `estado='propuesto'`; el abogado los confirma/rechaza y puede crear
+ * los suyos vía CRUD (migración 010).
+ *
+ * `EvidenciaItem` se mantiene como alias retrocompat — es lo mismo que
+ * `Anchor`. Código nuevo usa Anchor; código viejo (pre-010) sigue
+ * funcionando con el alias.
+ */
 
-export interface EvidenciaItem {
+export type AnchorOrigen = 'auto' | 'manual';
+export type AnchorEstado = 'propuesto' | 'confirmado' | 'rechazado';
+
+export interface Anchor {
   id_evidencia: number;
+  id_extraccion: number;
+  id_archivo: number;
   campo: string;
   page: number | null;
   char_start: number | null;
@@ -325,25 +340,134 @@ export interface EvidenciaItem {
   fuente_texto: FuenteExtraccion;
   id_ocr: number | null;
   confianza_ocr: number | null;
-  // Solo cuando fuente_texto='ocr':
+  /** Solo cuando fuente_texto='ocr': metadata del documento OCR origen. */
   id_ocr_documento: number | null;
   ocr_modelo: string | null;
   ocr_md_uri: string | null;
   ocr_pagina_char_start: number | null;
   ocr_pagina_char_end: number | null;
-  /** Bboxes en PUNTOS PDF de las líneas OCR que cubren este span.
-   *  Array de [x0, y0, x1, y1]. Una entidad puede partirse en varias
-   *  líneas (nombre largo a 2 renglones, etc.) por eso es lista. NULL
-   *  cuando fuente_texto='pdf_text' o evidencia legacy previa a
-   *  migración 009. */
+  /** Bboxes en PUNTOS PDF — array de [x0, y0, x1, y1]. Una entidad
+   *  puede partirse en varias líneas, por eso es lista. NULL cuando
+   *  fuente_texto='pdf_text' o evidencia legacy previa a migración 009. */
   bboxes: number[][] | null;
+  origen: AnchorOrigen;
+  estado: AnchorEstado;
+  creado_por: string | null;
+  fecha_creacion: string;
+  fecha_actualizacion: string | null;
 }
 
-export async function getEvidencia(idExtraccion: number): Promise<EvidenciaItem[]> {
+/** @deprecated Usar `Anchor`. Mantenido por compat. */
+export type EvidenciaItem = Anchor;
+
+export async function listAnchors(
+  idExtraccion: number,
+  opts: { includeRejected?: boolean } = {},
+): Promise<Anchor[]> {
+  const qs = opts.includeRejected === false ? '?include_rejected=false' : '';
   const res = await authedFetch(
-    `${API_URLS.documentos}/extracciones/${idExtraccion}/evidencia`,
+    `${API_URLS.documentos}/extracciones/${idExtraccion}/anchors${qs}`,
   );
-  if (!res.ok) throw new Error(`getEvidencia ${res.status}`);
-  const json = (await res.json()) as { data: { evidencia: EvidenciaItem[] } };
-  return json.data.evidencia;
+  if (!res.ok) throw new Error(`listAnchors ${res.status}`);
+  const json = (await res.json()) as { data: { anchors: Anchor[] } };
+  return json.data.anchors;
+}
+
+/** @deprecated Usar `listAnchors`. Mantenido por compat con código pre-010. */
+export async function getEvidencia(idExtraccion: number): Promise<Anchor[]> {
+  return listAnchors(idExtraccion);
+}
+
+export interface CreateAnchorInput {
+  campo: string;
+  page?: number | null;
+  char_start?: number | null;
+  char_end?: number | null;
+  snippet?: string | null;
+  fuente_texto?: 'pdf_text' | 'ocr';
+  bboxes?: number[][] | null;
+  id_ocr?: number | null;
+}
+
+export async function createAnchor(
+  idExtraccion: number, input: CreateAnchorInput,
+): Promise<Anchor> {
+  const res = await authedFetch(
+    `${API_URLS.documentos}/extracciones/${idExtraccion}/anchors`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!res.ok) throw new Error(`createAnchor ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { data: Anchor };
+  return json.data;
+}
+
+export interface UpdateAnchorInput {
+  campo?: string;
+  snippet?: string;
+  estado?: AnchorEstado;
+  page?: number;
+  char_start?: number;
+  char_end?: number;
+  bboxes?: number[][] | null;
+  /** True para poner bboxes a NULL (ej. cambio de OCR a pdf_text). */
+  clear_bboxes?: boolean;
+}
+
+export async function updateAnchor(
+  idAnchor: number, patch: UpdateAnchorInput,
+): Promise<Anchor> {
+  const res = await authedFetch(
+    `${API_URLS.documentos}/anchors/${idAnchor}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    },
+  );
+  if (!res.ok) throw new Error(`updateAnchor ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { data: Anchor };
+  return json.data;
+}
+
+export interface DeleteAnchorResult {
+  id_anchor: number;
+  /** 'deleted' = manual borrado físico; 'rejected' = auto a estado='rechazado'. */
+  action: 'deleted' | 'rejected';
+}
+
+export async function deleteAnchor(idAnchor: number): Promise<DeleteAnchorResult> {
+  const res = await authedFetch(
+    `${API_URLS.documentos}/anchors/${idAnchor}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw new Error(`deleteAnchor ${res.status}: ${await res.text()}`);
+  const json = (await res.json()) as { data: DeleteAnchorResult };
+  return json.data;
+}
+
+/** Confirma un anchor (estado='confirmado'). Shortcut de PATCH. */
+export async function confirmAnchor(idAnchor: number): Promise<Anchor> {
+  const res = await authedFetch(
+    `${API_URLS.documentos}/anchors/${idAnchor}/confirmar`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw new Error(`confirmAnchor ${res.status}`);
+  const json = (await res.json()) as { data: Anchor };
+  return json.data;
+}
+
+/** Rechaza un anchor (estado='rechazado'). Para los 'auto' es preferible
+ *  a DELETE — preserva la auditoría de qué propuso el modelo. */
+export async function rejectAnchor(idAnchor: number): Promise<Anchor> {
+  const res = await authedFetch(
+    `${API_URLS.documentos}/anchors/${idAnchor}/rechazar`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw new Error(`rejectAnchor ${res.status}`);
+  const json = (await res.json()) as { data: Anchor };
+  return json.data;
 }

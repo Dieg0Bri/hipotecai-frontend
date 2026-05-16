@@ -31,9 +31,10 @@ import PDFCanvas, { PAGE_ID_PREFIX } from '@/components/visor/PDFCanvas';
 import EntityPanel from '@/components/visor/EntityPanel';
 import OcrTranscriptPanel from '@/components/visor/OcrTranscriptPanel';
 import {
-  getArchivo, getSignedDownloadUrl, getOcrTranscript, getEvidencia,
+  getArchivo, getSignedDownloadUrl, getOcrTranscript,
+  listAnchors, confirmAnchor, rejectAnchor, deleteAnchor,
   triggerManualOcr, reprocesarArchivo,
-  type ArchivoConExtracciones, type OcrTranscript, type EvidenciaItem,
+  type ArchivoConExtracciones, type OcrTranscript, type Anchor,
   type EstadoProcesamiento,
 } from '@/lib/estudio';
 import { extraccionesToEntities } from '@/lib/extractionToEntities';
@@ -49,7 +50,7 @@ export default function VisorDocumento({ params }: PageProps) {
   const [archivo, setArchivo] = useState<ArchivoConExtracciones | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [ocr, setOcr] = useState<OcrTranscript | null>(null);
-  const [evidencia, setEvidencia] = useState<EvidenciaItem[]>([]);
+  const [anchors, setAnchors] = useState<Anchor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeEntityId, setActiveEntityId] = useState<string | null>(null);
@@ -58,10 +59,10 @@ export default function VisorDocumento({ params }: PageProps) {
   const [extractRunning, setExtractRunning] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
 
-  // Entities enriquecidas con la evidencia (badge OCR cuando aplica).
+  // Entities enriquecidas con los anchors (origen/estado por anchor).
   const entities = useMemo(
-    () => (archivo ? extraccionesToEntities(archivo.extracciones, evidencia) : []),
-    [archivo, evidencia],
+    () => (archivo ? extraccionesToEntities(archivo.extracciones, anchors) : []),
+    [archivo, anchors],
   );
 
   const activeEntity = useMemo(
@@ -74,7 +75,7 @@ export default function VisorDocumento({ params }: PageProps) {
     setLoading(true);
     setError(null);
     setOcr(null);
-    setEvidencia([]);
+    setAnchors([]);
 
     getArchivo(folio, idArchivo)
       .then(async (a) => {
@@ -100,15 +101,15 @@ export default function VisorDocumento({ params }: PageProps) {
             });
         }
 
-        // Evidencia — una request por extracción. Pocas en práctica
+        // Anchors — una request por extracción. Pocas en práctica
         // (1 archivo → 1 extracción típicamente), así que en serie está bien.
         if (a.extracciones.length > 0) {
           Promise.all(
             a.extracciones.map((ext) =>
-              getEvidencia(ext.id_extraccion).catch(() => [] as EvidenciaItem[]),
+              listAnchors(ext.id_extraccion).catch(() => [] as Anchor[]),
             ),
           ).then((arrs) => {
-            if (!cancelled) setEvidencia(arrs.flat());
+            if (!cancelled) setAnchors(arrs.flat());
           });
         }
       })
@@ -137,6 +138,51 @@ export default function VisorDocumento({ params }: PageProps) {
   // Click en highlight del PDF → marca entity activa en el panel.
   const handleEntityClick = useCallback((entityId: string) => {
     setActiveEntityId((prev) => (prev === entityId ? null : entityId));
+  }, []);
+
+  // CRUD de anchors — actualiza el estado optimistamente y revierte si el
+  // backend falla. Confirmar/Rechazar son shortcuts; Borrar es DELETE.
+  const replaceAnchor = useCallback((updated: Anchor) => {
+    setAnchors((prev) => prev.map((a) =>
+      a.id_evidencia === updated.id_evidencia ? updated : a,
+    ));
+  }, []);
+
+  const handleConfirmAnchor = useCallback(async (anchorId: number) => {
+    try {
+      const updated = await confirmAnchor(anchorId);
+      replaceAnchor(updated);
+    } catch (err) {
+      console.error('confirmAnchor failed', err);
+    }
+  }, [replaceAnchor]);
+
+  const handleRejectAnchor = useCallback(async (anchorId: number) => {
+    try {
+      const updated = await rejectAnchor(anchorId);
+      // El anchor sigue en BD con estado='rechazado'; el frontend lo filtra
+      // del display vía extractionToEntities (estado != 'rechazado').
+      replaceAnchor(updated);
+    } catch (err) {
+      console.error('rejectAnchor failed', err);
+    }
+  }, [replaceAnchor]);
+
+  const handleDeleteAnchor = useCallback(async (anchorId: number) => {
+    try {
+      const result = await deleteAnchor(anchorId);
+      if (result.action === 'deleted') {
+        setAnchors((prev) => prev.filter((a) => a.id_evidencia !== anchorId));
+      } else {
+        // action === 'rejected' — el anchor era 'auto', no se borra; queda
+        // soft-rejected. Re-leemos su estado actual.
+        setAnchors((prev) => prev.map((a) =>
+          a.id_evidencia === anchorId ? { ...a, estado: 'rechazado' as const } : a,
+        ));
+      }
+    } catch (err) {
+      console.error('deleteAnchor failed', err);
+    }
   }, []);
 
   // Manual OCR — gatilla ocr-api y a continuacion re-dispara la extraccion
@@ -191,17 +237,17 @@ export default function VisorDocumento({ params }: PageProps) {
           console.warn('OCR transcript no disponible tras manual:', err);
         }
       }
-      // Re-fetch de evidencia para que aparezcan los nuevos campos con bboxes.
+      // Re-fetch de anchors para que aparezcan los nuevos campos con bboxes.
       if (fresh.extracciones.length > 0) {
         try {
           const arrs = await Promise.all(
             fresh.extracciones.map((ext) =>
-              getEvidencia(ext.id_extraccion).catch(() => [] as EvidenciaItem[]),
+              listAnchors(ext.id_extraccion).catch(() => [] as Anchor[]),
             ),
           );
-          setEvidencia(arrs.flat());
+          setAnchors(arrs.flat());
         } catch (err) {
-          console.warn('Evidencia no disponible tras manual:', err);
+          console.warn('Anchors no disponibles tras manual:', err);
         }
       }
     } catch (err: unknown) {
@@ -245,12 +291,12 @@ export default function VisorDocumento({ params }: PageProps) {
         try {
           const arrs = await Promise.all(
             fresh.extracciones.map((ext) =>
-              getEvidencia(ext.id_extraccion).catch(() => [] as EvidenciaItem[]),
+              listAnchors(ext.id_extraccion).catch(() => [] as Anchor[]),
             ),
           );
-          setEvidencia(arrs.flat());
+          setAnchors(arrs.flat());
         } catch (err) {
-          console.warn('Evidencia no disponible tras re-procesar:', err);
+          console.warn('Anchors no disponibles tras re-procesar:', err);
         }
       }
     } catch (err: unknown) {
@@ -482,6 +528,9 @@ export default function VisorDocumento({ params }: PageProps) {
             documentName={archivo.nombre}
             documentType={tipoNombre}
             confidence={confianza}
+            onConfirmAnchor={handleConfirmAnchor}
+            onRejectAnchor={handleRejectAnchor}
+            onDeleteAnchor={handleDeleteAnchor}
           />
         </div>
       </div>

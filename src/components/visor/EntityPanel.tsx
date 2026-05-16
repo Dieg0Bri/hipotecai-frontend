@@ -14,11 +14,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   IdCard, Users, MapPin, Banknote, Pen, ShieldAlert, CheckCircle2, Map, FileQuestion,
-  Search, X, ChevronDown, ChevronRight, Edit3, Check, ScanLine,
+  Search, X, ChevronDown, ChevronRight, Check, ScanLine, Trash2, RotateCcw, Sparkles, Hand,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
-import { CATEGORY_META, type Entity, type EntityCategory } from '@/data/entities';
+import { CATEGORY_META, type Entity, type EntityAnchor, type EntityCategory } from '@/data/entities';
 
 const ICON_MAP: Record<string, LucideIcon> = {
   IdCard, Users, MapPin, Banknote, Pen, ShieldAlert, CheckCircle2, Map, FileQuestion,
@@ -31,11 +31,30 @@ interface Props {
   documentName: string;
   documentType: string;
   confidence: number;
+  /** Acciones de anchor. Si no se pasan, los botones quedan ocultos. */
+  onConfirmAnchor?: (anchorId: number) => Promise<void> | void;
+  onRejectAnchor?: (anchorId: number) => Promise<void> | void;
+  onDeleteAnchor?: (anchorId: number) => Promise<void> | void;
 }
 
 export default function EntityPanel({
   entities, activeEntityId, onSelect, documentName, documentType, confidence,
+  onConfirmAnchor, onRejectAnchor, onDeleteAnchor,
 }: Props) {
+  // Anchor sobre el que están operando los botones — siempre el primero de
+  // la entidad activa (el más prioritario por orderAnchor). Para v0 el panel
+  // expone acciones sobre ese; un futuro PR podría listar todos los anchors
+  // de la entidad para acciones independientes.
+  const [pendingAction, setPendingAction] = useState<number | null>(null);
+  const runAction = async (
+    anchorId: number,
+    fn?: (id: number) => Promise<void> | void,
+  ) => {
+    if (!fn) return;
+    setPendingAction(anchorId);
+    try { await fn(anchorId); }
+    finally { setPendingAction(null); }
+  };
   const [filter, setFilter] = useState('');
   const [collapsed, setCollapsed] = useState<Set<EntityCategory>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
@@ -229,14 +248,14 @@ export default function EntityPanel({
                             </dl>
                           )}
                           {isActive && (
-                            <div className="mt-2 flex items-center gap-1.5">
-                              <button className="text-[10px] uppercase tracking-[0.14em] px-2 py-1 border border-[#E5DFD3] hover:border-[#A47148] rounded-[2px] inline-flex items-center gap-1">
-                                <Edit3 className="w-3 h-3" strokeWidth={1.5} /> Editar
-                              </button>
-                              <button className="text-[10px] uppercase tracking-[0.14em] px-2 py-1 border border-[#E5DFD3] hover:border-[#2F5D3C] hover:text-[#2F5D3C] rounded-[2px] inline-flex items-center gap-1">
-                                <Check className="w-3 h-3" strokeWidth={1.5} /> Aprobar
-                              </button>
-                            </div>
+                            <AnchorActions
+                              entity={ent}
+                              pendingAction={pendingAction}
+                              onConfirm={(id) => runAction(id, onConfirmAnchor)}
+                              onReject={(id) => runAction(id, onRejectAnchor)}
+                              onDelete={(id) => runAction(id, onDeleteAnchor)}
+                              metaInk={meta.ink}
+                            />
                           )}
                         </button>
                       </li>
@@ -268,5 +287,101 @@ export default function EntityPanel({
         </div>
       </footer>
     </aside>
+  );
+}
+
+
+/**
+ * AnchorActions · botones de Confirmar / Rechazar / Borrar sobre el
+ * primer anchor activo de la entidad. Solo se renderiza cuando la entidad
+ * tiene anchors persistidos (id_anchor >= 0); las entidades legacy sin
+ * anchors no muestran acciones.
+ *
+ * Reglas:
+ *  - Anchor 'auto' propuesto: Confirmar + Rechazar
+ *  - Anchor 'auto' confirmado: solo Rechazar (botón "Volver a proponer")
+ *  - Anchor 'manual': Borrar (DELETE físico)
+ */
+function AnchorActions({
+  entity, pendingAction, onConfirm, onReject, onDelete, metaInk,
+}: {
+  entity: Entity;
+  pendingAction: number | null;
+  onConfirm: (id: number) => Promise<void> | void;
+  onReject: (id: number) => Promise<void> | void;
+  onDelete: (id: number) => Promise<void> | void;
+  metaInk: string;
+}) {
+  const anchors: EntityAnchor[] = (entity.anchors ?? []).filter(
+    (a) => a.estado !== 'rechazado' && a.id_anchor >= 0,
+  );
+  if (anchors.length === 0) return null;
+  const primary = anchors[0];
+  const busy = pendingAction === primary.id_anchor;
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {/* Badge de origen del anchor primario */}
+      <span
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] tracking-[0.1em] uppercase rounded-[2px] bg-white border"
+        style={{ borderColor: `${metaInk}40`, color: metaInk }}
+        title={primary.origen === 'manual'
+          ? 'Anchor agregado por el abogado'
+          : 'Anchor propuesto automáticamente por el extractor'}
+      >
+        {primary.origen === 'manual'
+          ? <><Hand className="w-2.5 h-2.5" strokeWidth={1.75} /> Manual</>
+          : <><Sparkles className="w-2.5 h-2.5" strokeWidth={1.75} /> Auto</>}
+        {primary.estado === 'confirmado' && (
+          <span className="ml-0.5">· confirmado</span>
+        )}
+      </span>
+
+      {/* Botones según origen + estado */}
+      {primary.origen === 'auto' && primary.estado === 'propuesto' && (
+        <>
+          <button
+            disabled={busy}
+            onClick={() => onConfirm(primary.id_anchor)}
+            className="text-[10px] uppercase tracking-[0.14em] px-2 py-1 border border-[#E5DFD3] hover:border-[#2F5D3C] hover:text-[#2F5D3C] disabled:opacity-50 rounded-[2px] inline-flex items-center gap-1"
+          >
+            <Check className="w-3 h-3" strokeWidth={1.5} /> Confirmar
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => onReject(primary.id_anchor)}
+            className="text-[10px] uppercase tracking-[0.14em] px-2 py-1 border border-[#E5DFD3] hover:border-[#7E1F1F] hover:text-[#7E1F1F] disabled:opacity-50 rounded-[2px] inline-flex items-center gap-1"
+          >
+            <X className="w-3 h-3" strokeWidth={1.5} /> Rechazar
+          </button>
+        </>
+      )}
+
+      {primary.origen === 'auto' && primary.estado === 'confirmado' && (
+        <button
+          disabled={busy}
+          onClick={() => onReject(primary.id_anchor)}
+          className="text-[10px] uppercase tracking-[0.14em] px-2 py-1 border border-[#E5DFD3] hover:border-[#7E1F1F] hover:text-[#7E1F1F] disabled:opacity-50 rounded-[2px] inline-flex items-center gap-1"
+        >
+          <RotateCcw className="w-3 h-3" strokeWidth={1.5} /> Deshacer
+        </button>
+      )}
+
+      {primary.origen === 'manual' && (
+        <button
+          disabled={busy}
+          onClick={() => onDelete(primary.id_anchor)}
+          className="text-[10px] uppercase tracking-[0.14em] px-2 py-1 border border-[#E5DFD3] hover:border-[#7E1F1F] hover:text-[#7E1F1F] disabled:opacity-50 rounded-[2px] inline-flex items-center gap-1"
+        >
+          <Trash2 className="w-3 h-3" strokeWidth={1.5} /> Borrar
+        </button>
+      )}
+
+      {anchors.length > 1 && (
+        <span className="text-[10px] tabular text-[#6B6B6B]">
+          · {anchors.length - 1} más
+        </span>
+      )}
+    </div>
   );
 }
