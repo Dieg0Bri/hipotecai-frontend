@@ -36,7 +36,8 @@ export type EntityCategory =
  *  - `bboxes` están en PUNTOS PDF (1/72") con origen top-left.
  */
 export interface EntityAnchor {
-  id_anchor: number;
+  /** UUID v4 generado por el backend al crear el anchor. */
+  id_anchor: string;
   page: number | null;
   char_start: number | null;
   char_end: number | null;

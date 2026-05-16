@@ -87,7 +87,9 @@ function orderAnchor(a: Anchor, b: Anchor): number {
 
 function toEntityAnchor(a: Anchor): EntityAnchor {
   return {
-    id_anchor: a.id_evidencia,
+    // Migración 011: id_evidencia es un string UUID. Backend sigue
+    // exponiéndolo como `id_evidencia` por compat.
+    id_anchor: String(a.id ?? a.id_evidencia),
     page: a.page,
     char_start: a.char_start,
     char_end: a.char_end,

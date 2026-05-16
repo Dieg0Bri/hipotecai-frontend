@@ -60,7 +60,7 @@ export default function BboxHighlight({
     const scale = pageCssWidth / pageWidthPt;
     const out: Array<{
       entityId: string;
-      anchorId: number;
+      anchorId: string;
       category: Entity['category'];
       origen: 'auto' | 'manual';
       estado: 'propuesto' | 'confirmado' | 'rechazado';
@@ -73,7 +73,10 @@ export default function BboxHighlight({
       const anchorsForEnt = ent.anchors ?? (
         ent.bboxes && ent.bboxes.length > 0 && ent.pagina != null
           ? [{
-              id_anchor: -1,
+              // Anchor sintético para entidades legacy sin id real — la UI
+              // no debe ofrecer acciones sobre él. El centinela "legacy:..."
+              // es lo que EntityPanel chequea para ocultar los botones.
+              id_anchor: 'legacy:' + ent.id,
               page: ent.pagina,
               char_start: null, char_end: null, snippet: null,
               fuente_texto: ent.fuente_texto ?? 'ocr',

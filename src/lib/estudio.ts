@@ -327,7 +327,12 @@ export type AnchorOrigen = 'auto' | 'manual';
 export type AnchorEstado = 'propuesto' | 'confirmado' | 'rechazado';
 
 export interface Anchor {
-  id_evidencia: number;
+  /** Identificador del anchor. A partir de la migración 011 es un UUID v4
+   *  (string), antes era SERIAL int. Las respuestas viejas pueden venir
+   *  como number; tratá siempre como string en código nuevo. */
+  id_evidencia: string;
+  /** Alias canónico de `id_evidencia` (mismo valor) — usá este en código nuevo. */
+  id?: string;
   id_extraccion: number;
   id_archivo: number;
   campo: string;
@@ -418,7 +423,7 @@ export interface UpdateAnchorInput {
 }
 
 export async function updateAnchor(
-  idAnchor: number, patch: UpdateAnchorInput,
+  idAnchor: string, patch: UpdateAnchorInput,
 ): Promise<Anchor> {
   const res = await authedFetch(
     `${API_URLS.documentos}/anchors/${idAnchor}`,
@@ -434,12 +439,14 @@ export async function updateAnchor(
 }
 
 export interface DeleteAnchorResult {
-  id_anchor: number;
-  /** 'deleted' = manual borrado físico; 'rejected' = auto a estado='rechazado'. */
+  id_anchor: string;
+  /** Desde la migración 011 siempre es 'deleted' (hard-delete del blob).
+   *  El valor 'rejected' se mantiene en el tipo para compat con clientes
+   *  antiguos pero no se emite. */
   action: 'deleted' | 'rejected';
 }
 
-export async function deleteAnchor(idAnchor: number): Promise<DeleteAnchorResult> {
+export async function deleteAnchor(idAnchor: string): Promise<DeleteAnchorResult> {
   const res = await authedFetch(
     `${API_URLS.documentos}/anchors/${idAnchor}`,
     { method: 'DELETE' },
@@ -450,7 +457,7 @@ export async function deleteAnchor(idAnchor: number): Promise<DeleteAnchorResult
 }
 
 /** Confirma un anchor (estado='confirmado'). Shortcut de PATCH. */
-export async function confirmAnchor(idAnchor: number): Promise<Anchor> {
+export async function confirmAnchor(idAnchor: string): Promise<Anchor> {
   const res = await authedFetch(
     `${API_URLS.documentos}/anchors/${idAnchor}/confirmar`,
     { method: 'POST' },
@@ -460,14 +467,15 @@ export async function confirmAnchor(idAnchor: number): Promise<Anchor> {
   return json.data;
 }
 
-/** Rechaza un anchor (estado='rechazado'). Para los 'auto' es preferible
- *  a DELETE — preserva la auditoría de qué propuso el modelo. */
-export async function rejectAnchor(idAnchor: number): Promise<Anchor> {
+/** Rechaza un anchor. Desde la migración 011 el backend lo borra del blob
+ *  (es semánticamente equivalente a DELETE) y devuelve `{action: 'deleted'}`
+ *  en vez del anchor. Esta función expone esa forma directamente. */
+export async function rejectAnchor(idAnchor: string): Promise<DeleteAnchorResult> {
   const res = await authedFetch(
     `${API_URLS.documentos}/anchors/${idAnchor}/rechazar`,
     { method: 'POST' },
   );
   if (!res.ok) throw new Error(`rejectAnchor ${res.status}`);
-  const json = (await res.json()) as { data: Anchor };
+  const json = (await res.json()) as { data: DeleteAnchorResult };
   return json.data;
 }

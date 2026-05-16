@@ -32,9 +32,9 @@ interface Props {
   documentType: string;
   confidence: number;
   /** Acciones de anchor. Si no se pasan, los botones quedan ocultos. */
-  onConfirmAnchor?: (anchorId: number) => Promise<void> | void;
-  onRejectAnchor?: (anchorId: number) => Promise<void> | void;
-  onDeleteAnchor?: (anchorId: number) => Promise<void> | void;
+  onConfirmAnchor?: (anchorId: string) => Promise<void> | void;
+  onRejectAnchor?: (anchorId: string) => Promise<void> | void;
+  onDeleteAnchor?: (anchorId: string) => Promise<void> | void;
 }
 
 export default function EntityPanel({
@@ -45,10 +45,10 @@ export default function EntityPanel({
   // la entidad activa (el más prioritario por orderAnchor). Para v0 el panel
   // expone acciones sobre ese; un futuro PR podría listar todos los anchors
   // de la entidad para acciones independientes.
-  const [pendingAction, setPendingAction] = useState<number | null>(null);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
   const runAction = async (
-    anchorId: number,
-    fn?: (id: number) => Promise<void> | void,
+    anchorId: string,
+    fn?: (id: string) => Promise<void> | void,
   ) => {
     if (!fn) return;
     setPendingAction(anchorId);
@@ -306,14 +306,16 @@ function AnchorActions({
   entity, pendingAction, onConfirm, onReject, onDelete, metaInk,
 }: {
   entity: Entity;
-  pendingAction: number | null;
-  onConfirm: (id: number) => Promise<void> | void;
-  onReject: (id: number) => Promise<void> | void;
-  onDelete: (id: number) => Promise<void> | void;
+  pendingAction: string | null;
+  onConfirm: (id: string) => Promise<void> | void;
+  onReject: (id: string) => Promise<void> | void;
+  onDelete: (id: string) => Promise<void> | void;
   metaInk: string;
 }) {
+  // Anchors persistidos (id real UUID); ocultamos los sintéticos legacy
+  // que tienen id "legacy:..." porque sobre ellos no podemos operar via API.
   const anchors: EntityAnchor[] = (entity.anchors ?? []).filter(
-    (a) => a.estado !== 'rechazado' && a.id_anchor >= 0,
+    (a) => a.estado !== 'rechazado' && !a.id_anchor.startsWith('legacy:'),
   );
   if (anchors.length === 0) return null;
   const primary = anchors[0];
