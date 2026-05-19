@@ -143,94 +143,104 @@ export default function OcrTranscriptPanel({ documento, paginas, activeEntity }:
 /**
  * Renderiza el texto de una página resaltando la entity activa.
  *
- * Estrategia (en orden):
- *  1. **Por offsets de anchor** — si la entity tiene anchors `ocr` con
- *     `char_start/char_end` válidos en esta página, los traduce de offsets
- *     globales del .md a locales del bloque (restando `pageGlobalStart`)
- *     y los envuelve. Es robusto a texto repetido y whitespace OCR raro.
- *  2. **Fallback string-match** — para entidades legacy sin anchors
- *     persistidos, busca la primera ocurrencia del texto literal
- *     (case-insensitive). Compatible con extracciones viejas.
+ * ⚠ Por qué string-match en vez de offsets:
+ * `Anchor.char_start/char_end` vienen del extractor (langextract) que
+ * corre sobre `assemble_text_and_offsets(pages)` — un ensamblado SIN
+ * el header del .md (`# OCR — id_archivo X`, `> Modelo…`, `---`,
+ * disclaimer, `## Página N` headers). El `.md` que el visor descarga
+ * SÍ tiene ese header. Los dos sistemas de coordenadas no coinciden,
+ * así que sumar/restar offsets crudos da basura.
+ *
+ * En cambio cada anchor trae `snippet`: el texto literal capturado del
+ * documento. Buscarlo case-insensitive dentro del bloque de SU página
+ * (filtrando por `a.page`) es robusto a:
+ *  - El mismo texto en varias páginas → page filter lo separa
+ *  - Whitespace OCR raro → es lo que el OCR capturó, idéntico al .md
+ *  - Múltiples anchors por página → match cada uno por separado
+ *
+ * Si una entity tiene anchors persistidos pero ninguno matchea acá
+ * (porque el snippet salió de pdf_text en un doc mixto, p.ej.), cae
+ * a un fallback con `entity.text` para no quedar sin highlight.
  *
  * Los `<mark>` llevan `data-entity-id` + `data-bbox-marker="ocr"` para
  * que LeaderLine los pueda usar como ancla visual (PDF ↔ OCR ↔ Panel).
- *
- * Si hay varios anchors en la misma página (caso típico: el mismo campo
- * aparece dos veces en la escritura), se pintan todos — la línea apunta
- * al primero por orden de aparición en el DOM.
  *
  * Devuelve React nodes (no HTML) para no inyectar XSS.
  */
 function renderWithHighlight(
   text: string,
-  pageGlobalStart: number,
+  _pageGlobalStart: number, // reservado por si el backend algún día expone offsets en .md
   pageNumber: number,
   activeEntity: Entity | null,
 ): ReactNode {
   if (!activeEntity) return text;
 
-  // Path 1: offsets de anchors
-  const anchorRanges = (activeEntity.anchors ?? [])
-    .filter((a) =>
-      a.fuente_texto === 'ocr' &&
-      a.estado !== 'rechazado' &&
-      a.page === pageNumber &&
-      a.char_start != null &&
-      a.char_end != null,
-    )
-    .map((a) => ({
-      // Convertimos global → local del bloque de la página.
-      start: (a.char_start as number) - pageGlobalStart,
-      end: (a.char_end as number) - pageGlobalStart,
+  // Path 1: snippets de anchors de ESTA página
+  const anchorMatches: Array<{ start: number; end: number; id_anchor: string }> = [];
+  const lowerText = text.toLowerCase();
+  for (const a of activeEntity.anchors ?? []) {
+    if (a.fuente_texto !== 'ocr') continue;
+    if (a.estado === 'rechazado') continue;
+    if (a.page !== pageNumber) continue;
+    const snippet = (a.snippet ?? '').trim();
+    if (snippet.length < 3) continue;
+    const idx = lowerText.indexOf(snippet.toLowerCase());
+    if (idx < 0) continue;
+    anchorMatches.push({
+      start: idx,
+      end: idx + snippet.length,
       id_anchor: a.id_anchor,
-    }))
-    // Clamp + sanity: descarta ranges fuera del bloque o invertidos.
-    .filter((r) => r.end > r.start && r.start >= 0 && r.start < text.length)
-    .map((r) => ({ ...r, end: Math.min(r.end, text.length) }))
-    // Orden ascendente para poder construir el render lineal.
-    .sort((a, b) => a.start - b.start);
-
-  if (anchorRanges.length > 0) {
-    const parts: ReactNode[] = [];
-    let cursor = 0;
-    for (let i = 0; i < anchorRanges.length; i++) {
-      const r = anchorRanges[i];
-      // Texto antes del mark.
-      if (r.start > cursor) parts.push(text.slice(cursor, r.start));
-      parts.push(
-        <mark
-          key={`a-${r.id_anchor}-${i}`}
-          data-entity-id={activeEntity.id}
-          data-anchor-id={r.id_anchor}
-          data-bbox-marker="ocr"
-          className="bg-[#FFD56B] text-[#1C1C1C] px-0.5 rounded-[1px]"
-        >
-          {text.slice(r.start, r.end)}
-        </mark>,
-      );
-      cursor = r.end;
-    }
-    if (cursor < text.length) parts.push(text.slice(cursor));
-    return <>{parts}</>;
+    });
   }
 
-  // Path 2: fallback string-match (entidades legacy o anchors sin offsets)
+  // Dedupe overlap: si dos anchors capturaron el mismo snippet, no
+  // queremos pintar dos <mark> uno arriba del otro.
+  anchorMatches.sort((a, b) => a.start - b.start);
+  const nonOverlap: typeof anchorMatches = [];
+  for (const m of anchorMatches) {
+    const last = nonOverlap[nonOverlap.length - 1];
+    if (!last || m.start >= last.end) nonOverlap.push(m);
+  }
+
+  if (nonOverlap.length > 0) {
+    return renderRanges(text, nonOverlap, activeEntity.id);
+  }
+
+  // Path 2: fallback con entity.text (entidades legacy o anchors sin snippet)
   if (!activeEntity.text || activeEntity.text.length < 3) return text;
   const needle = activeEntity.text.trim();
-  const idx = text.toLowerCase().indexOf(needle.toLowerCase());
+  const idx = lowerText.indexOf(needle.toLowerCase());
   if (idx < 0) return text;
+  return renderRanges(
+    text,
+    [{ start: idx, end: idx + needle.length, id_anchor: `fallback-${activeEntity.id}` }],
+    activeEntity.id,
+  );
+}
 
-  return (
-    <>
-      {text.slice(0, idx)}
+function renderRanges(
+  text: string,
+  ranges: Array<{ start: number; end: number; id_anchor: string }>,
+  entityId: string,
+): ReactNode {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  for (let i = 0; i < ranges.length; i++) {
+    const r = ranges[i];
+    if (r.start > cursor) parts.push(text.slice(cursor, r.start));
+    parts.push(
       <mark
-        data-entity-id={activeEntity.id}
+        key={`m-${r.id_anchor}-${i}`}
+        data-entity-id={entityId}
+        data-anchor-id={r.id_anchor}
         data-bbox-marker="ocr"
         className="bg-[#FFD56B] text-[#1C1C1C] px-0.5 rounded-[1px]"
       >
-        {text.slice(idx, idx + needle.length)}
-      </mark>
-      {text.slice(idx + needle.length)}
-    </>
-  );
+        {text.slice(r.start, r.end)}
+      </mark>,
+    );
+    cursor = r.end;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return <>{parts}</>;
 }

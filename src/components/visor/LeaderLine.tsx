@@ -76,35 +76,54 @@ export default function LeaderLine({
       // Construimos la cadena de waypoints en orden de izquierda a
       // derecha visual: PDF → OCR → Card. Si alguno no está, se omite
       // (no rompe — el siguiente toma su lugar).
-      const points: Endpoint[] = [];
-      const addRightEdge = (el: HTMLElement) => {
-        const r = el.getBoundingClientRect();
-        points.push({ x: r.right, y: r.top + r.height / 2 });
-      };
-      const addLeftEdge = (el: HTMLElement) => {
-        const r = el.getBoundingClientRect();
-        points.push({ x: r.left, y: r.top + r.height / 2 });
-      };
-      // Cada nodo intermedio se cruza por su centro horizontal: la
-      // curva entra por la izquierda y sale por la derecha — eso da
-      // continuidad visual "pasamos por acá" sin doble flecha.
-      const addBothEdges = (el: HTMLElement) => {
-        const r = el.getBoundingClientRect();
-        points.push({ x: r.left, y: r.top + r.height / 2 });
-        points.push({ x: r.right, y: r.top + r.height / 2 });
+      //
+      // Para spans del OCR que abarcan varias líneas (texto largo en
+      // wrap), usamos `getClientRects()[0]` — el rect de la PRIMERA
+      // línea visual. `getBoundingClientRect()` daría un rect que
+      // engloba todas las líneas y la curva quedaría apuntando al
+      // medio del párrafo.
+      const firstClientRect = (el: HTMLElement): DOMRect => {
+        const rects = el.getClientRects();
+        return rects.length > 0 ? rects[0] : el.getBoundingClientRect();
       };
 
-      if (pdfEl) addRightEdge(pdfEl);
-      if (ocrEl) {
-        // OCR es nodo intermedio cuando hay PDF y Card a sus lados.
-        // Si está solo (sin PDF) o sin Card, se trata como extremo.
-        const hasLeft = !!pdfEl;
-        const hasRight = !!cardEl;
-        if (hasLeft && hasRight) addBothEdges(ocrEl);
-        else if (hasLeft) addLeftEdge(ocrEl);
-        else addRightEdge(ocrEl);
+      // Descarta elementos scrolleados fuera del viewport — dibujar a
+      // coords fuera del SVG no se ve y rompe la cadena. Si el OCR
+      // está scrolleado pero PDF y Card sí están visibles, queremos
+      // que la curva los una directo.
+      const vh = window.innerHeight;
+      const isInView = (r: DOMRect): boolean => r.bottom > 0 && r.top < vh;
+
+      const pdfRect = pdfEl ? firstClientRect(pdfEl) : null;
+      const ocrRect = ocrEl ? firstClientRect(ocrEl) : null;
+      const cardRect = cardEl ? firstClientRect(cardEl) : null;
+
+      const pdfVisible = pdfRect && isInView(pdfRect);
+      const ocrVisible = ocrRect && isInView(ocrRect);
+      const cardVisible = cardRect && isInView(cardRect);
+
+      const points: Endpoint[] = [];
+      if (pdfVisible) {
+        points.push({ x: pdfRect!.right, y: pdfRect!.top + pdfRect!.height / 2 });
       }
-      if (cardEl) addLeftEdge(cardEl);
+      if (ocrVisible) {
+        const r = ocrRect!;
+        const hasLeft = !!pdfVisible;
+        const hasRight = !!cardVisible;
+        // Nodo intermedio: pasamos por el centro horizontal del mark
+        // (curva entra y sale del mismo punto, queda como vértice
+        // suave). Si está como extremo, usamos el borde correspondiente.
+        if (hasLeft && hasRight) {
+          points.push({ x: r.left + r.width / 2, y: r.top + r.height / 2 });
+        } else if (hasLeft) {
+          points.push({ x: r.left, y: r.top + r.height / 2 });
+        } else {
+          points.push({ x: r.right, y: r.top + r.height / 2 });
+        }
+      }
+      if (cardVisible) {
+        points.push({ x: cardRect!.left, y: cardRect!.top + cardRect!.height / 2 });
+      }
 
       // Necesitamos al menos 2 puntos para dibujar una curva.
       setWaypoints(points.length >= 2 ? points : []);
@@ -116,15 +135,30 @@ export default function LeaderLine({
     const onScroll = () => recompute();
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', recompute);
-    // Re-medimos también periódicamente las primeras ~1.5s porque el
-    // PDF puede terminar de renderizar pages después del mount inicial.
+
+    // MutationObserver: el OCR se descarga async (fetch del .md desde GCS,
+    // ~200ms-2s). Cuando el componente termina de renderizar el <mark> ya
+    // se nos pasó el polling viejo. Observamos cambios en data-entity-id
+    // y data-bbox-marker para re-medir en tiempo real cuando el OCR llega
+    // o cuando pdfjs termina de renderizar una página.
+    const observer = new MutationObserver(() => recompute());
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-entity-id', 'data-bbox-marker'],
+    });
+
+    // Polling de respaldo durante 3s para casos donde MutationObserver no
+    // dispara (re-layout sin cambio de DOM, ej. fuente cargando tarde).
     const interval = window.setInterval(recompute, 200);
     const stopInterval = window.setTimeout(
       () => window.clearInterval(interval),
-      1500,
+      3000,
     );
 
     return () => {
+      observer.disconnect();
       window.removeEventListener('scroll', onScroll, true);
       window.removeEventListener('resize', recompute);
       window.clearInterval(interval);
@@ -179,10 +213,10 @@ export default function LeaderLine({
       {/* Punto en el waypoint intermedio (OCR) si hay tres anclas. Hace
           explícito que la curva "pasa por acá" y no es una sola línea
           que se dobla por casualidad. */}
-      {waypoints.length >= 4 && (
+      {waypoints.length === 3 && (
         <circle
-          cx={(waypoints[1].x + waypoints[2].x) / 2}
-          cy={(waypoints[1].y + waypoints[2].y) / 2}
+          cx={waypoints[1].x}
+          cy={waypoints[1].y}
           r={3}
           fill={color}
           opacity={0.7}
