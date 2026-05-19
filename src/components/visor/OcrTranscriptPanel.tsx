@@ -16,7 +16,7 @@
  * IMPORTANTE: el OCR es un MODELO, no el documento. La cabecera lleva
  * disclaimer visible y cada línea baja en confianza es indicada visualmente.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Loader2, ScanLine, AlertTriangle } from 'lucide-react';
 
 import {
@@ -131,7 +131,7 @@ export default function OcrTranscriptPanel({ documento, paginas, activeEntity }:
               )}
             </header>
             <div className="text-[12.5px] leading-relaxed text-[#1C1C1C] whitespace-pre-wrap font-serif">
-              {renderWithHighlight(p.texto, activeEntity)}
+              {renderWithHighlight(p.texto, p.char_start, p.pagina, activeEntity)}
             </div>
           </section>
         ))}
@@ -141,24 +141,96 @@ export default function OcrTranscriptPanel({ documento, paginas, activeEntity }:
 }
 
 /**
- * Renderiza el texto de una página resaltando la primera ocurrencia del
- * texto de `activeEntity` (case-insensitive). Si no se encuentra, devuelve
- * el texto plano. Devolvemos React nodes (no HTML) para no inyectar XSS.
+ * Renderiza el texto de una página resaltando la entity activa.
+ *
+ * Estrategia (en orden):
+ *  1. **Por offsets de anchor** — si la entity tiene anchors `ocr` con
+ *     `char_start/char_end` válidos en esta página, los traduce de offsets
+ *     globales del .md a locales del bloque (restando `pageGlobalStart`)
+ *     y los envuelve. Es robusto a texto repetido y whitespace OCR raro.
+ *  2. **Fallback string-match** — para entidades legacy sin anchors
+ *     persistidos, busca la primera ocurrencia del texto literal
+ *     (case-insensitive). Compatible con extracciones viejas.
+ *
+ * Los `<mark>` llevan `data-entity-id` + `data-bbox-marker="ocr"` para
+ * que LeaderLine los pueda usar como ancla visual (PDF ↔ OCR ↔ Panel).
+ *
+ * Si hay varios anchors en la misma página (caso típico: el mismo campo
+ * aparece dos veces en la escritura), se pintan todos — la línea apunta
+ * al primero por orden de aparición en el DOM.
+ *
+ * Devuelve React nodes (no HTML) para no inyectar XSS.
  */
-function renderWithHighlight(text: string, activeEntity: Entity | null) {
-  if (!activeEntity || !activeEntity.text || activeEntity.text.length < 3) return text;
+function renderWithHighlight(
+  text: string,
+  pageGlobalStart: number,
+  pageNumber: number,
+  activeEntity: Entity | null,
+): ReactNode {
+  if (!activeEntity) return text;
+
+  // Path 1: offsets de anchors
+  const anchorRanges = (activeEntity.anchors ?? [])
+    .filter((a) =>
+      a.fuente_texto === 'ocr' &&
+      a.estado !== 'rechazado' &&
+      a.page === pageNumber &&
+      a.char_start != null &&
+      a.char_end != null,
+    )
+    .map((a) => ({
+      // Convertimos global → local del bloque de la página.
+      start: (a.char_start as number) - pageGlobalStart,
+      end: (a.char_end as number) - pageGlobalStart,
+      id_anchor: a.id_anchor,
+    }))
+    // Clamp + sanity: descarta ranges fuera del bloque o invertidos.
+    .filter((r) => r.end > r.start && r.start >= 0 && r.start < text.length)
+    .map((r) => ({ ...r, end: Math.min(r.end, text.length) }))
+    // Orden ascendente para poder construir el render lineal.
+    .sort((a, b) => a.start - b.start);
+
+  if (anchorRanges.length > 0) {
+    const parts: ReactNode[] = [];
+    let cursor = 0;
+    for (let i = 0; i < anchorRanges.length; i++) {
+      const r = anchorRanges[i];
+      // Texto antes del mark.
+      if (r.start > cursor) parts.push(text.slice(cursor, r.start));
+      parts.push(
+        <mark
+          key={`a-${r.id_anchor}-${i}`}
+          data-entity-id={activeEntity.id}
+          data-anchor-id={r.id_anchor}
+          data-bbox-marker="ocr"
+          className="bg-[#FFD56B] text-[#1C1C1C] px-0.5 rounded-[1px]"
+        >
+          {text.slice(r.start, r.end)}
+        </mark>,
+      );
+      cursor = r.end;
+    }
+    if (cursor < text.length) parts.push(text.slice(cursor));
+    return <>{parts}</>;
+  }
+
+  // Path 2: fallback string-match (entidades legacy o anchors sin offsets)
+  if (!activeEntity.text || activeEntity.text.length < 3) return text;
   const needle = activeEntity.text.trim();
-  const haystack = text;
-  const idx = haystack.toLowerCase().indexOf(needle.toLowerCase());
+  const idx = text.toLowerCase().indexOf(needle.toLowerCase());
   if (idx < 0) return text;
 
   return (
     <>
-      {haystack.slice(0, idx)}
-      <mark className="bg-[#FFD56B] text-[#1C1C1C] px-0.5 rounded-[1px]" data-active="true">
-        {haystack.slice(idx, idx + needle.length)}
+      {text.slice(0, idx)}
+      <mark
+        data-entity-id={activeEntity.id}
+        data-bbox-marker="ocr"
+        className="bg-[#FFD56B] text-[#1C1C1C] px-0.5 rounded-[1px]"
+      >
+        {text.slice(idx, idx + needle.length)}
       </mark>
-      {haystack.slice(idx + needle.length)}
+      {text.slice(idx + needle.length)}
     </>
   );
 }

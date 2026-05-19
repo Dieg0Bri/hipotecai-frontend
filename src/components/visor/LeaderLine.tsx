@@ -1,30 +1,33 @@
 'use client';
 
 /**
- * LeaderLine · curva SVG que conecta el bbox activo del PDF con su
- * card en el panel lateral.
+ * LeaderLine · curva SVG que conecta visualmente el bbox del PDF, el
+ * span del OCR (si está montado) y la card del panel lateral.
  * --------------------------------------------------------------
+ * Layout posible del visor:
+ *   - 2 columnas (PDF | Panel)          → 1 curva: PDF → Panel
+ *   - 3 columnas (PDF | OCR | Panel)    → 2 curvas: PDF → OCR → Panel
+ *   - Solo OCR (sin PDF en viewport)    → 1 curva: OCR → Panel
+ *
  * Diseño:
  * - Overlay fijo a viewport (position: fixed) — el SVG vive afuera del
- *   scroll del PDF y del panel para que su sistema de coordenadas
- *   sea estable. Si lo metieras dentro de cualquiera de los dos, los
- *   scrolls romperían la curva.
- * - Re-mide en scroll/resize via ResizeObserver + scroll listener
- *   capturing (necesario porque el scroll ocurre en contenedores
- *   internos, no en window).
+ *   scroll del PDF/OCR/panel para que su sistema de coordenadas
+ *   sea estable. Si lo metieras dentro de cualquiera, los scrolls
+ *   romperían la curva.
+ * - Re-mide en scroll/resize capturing (necesario porque los scrolls
+ *   suceden en contenedores internos, no en window).
  * - Bézier cúbico con tangentes horizontales — la línea sale del bbox
- *   hacia la derecha y entra a la card desde la izquierda, dando un
- *   "leader" natural sin atravesar el documento.
+ *   hacia la derecha y entra al destino desde la izquierda, dando un
+ *   "leader" natural sin atravesar verticalmente los documentos.
  *
- * Selecciona el primer bbox visible del entityId activo (data-anchor-id
- * más alto pierde frente al más bajo — el primero que aparece en DOM
- * está priorizado por sorted-by-origen del extractionToEntities).
+ * Selección de elementos (por `data-bbox-marker`):
+ *   - "bbox" / "textlayer" → highlight del PDF (BboxHighlight / EntityHighlight)
+ *   - "ocr"                → <mark> del OcrTranscriptPanel
+ *   - sin marker           → card del panel lateral (EntityPanel)
  *
- * No se renderiza nada si:
- * - No hay entidad activa
- * - El bbox no está en una página visible del viewport
- * - La card del panel está fuera de viewport (queda implícito por las
- *   coords; la curva sale del viewport y desaparece sola, no es bug)
+ * Cuando hay varios elementos del mismo tipo, agarra el primero del DOM
+ * (ya está sorted por prioridad: manual confirmado > auto, ver
+ * extractionToEntities).
  */
 import { useEffect, useState } from 'react';
 
@@ -36,9 +39,9 @@ interface Props {
   enabled?: boolean;
 }
 
-interface Endpoints {
-  x1: number; y1: number;  // origen (bbox del PDF)
-  x2: number; y2: number;  // destino (card del panel)
+interface Endpoint {
+  x: number;
+  y: number;
 }
 
 export default function LeaderLine({
@@ -46,42 +49,65 @@ export default function LeaderLine({
   color = '#A47148',
   enabled = true,
 }: Props) {
-  const [points, setPoints] = useState<Endpoints | null>(null);
+  // Lista de puntos a unir secuencialmente. Cada par consecutivo se
+  // dibuja como una curva Bézier individual.
+  const [waypoints, setWaypoints] = useState<Endpoint[]>([]);
 
   useEffect(() => {
     if (!enabled || !activeEntityId) {
-      setPoints(null);
+      setWaypoints([]);
       return;
     }
 
     const recompute = () => {
-      // Buscamos el primer bbox visible (puede haber varios — uno por
-      // anchor activo). Tomamos el primero del DOM order, que ya está
-      // sorted por prioridad (manual confirmado > auto, ver
-      // extractionToEntities).
-      // Selector explícito por `data-bbox-marker`: el visor pone "bbox"
-      // (BboxHighlight) o "textlayer" (EntityHighlight); el panel no pone
-      // ningún marker. Cualquiera de los dos sirve como origen visual.
-      const bboxEl = document.querySelector<HTMLElement>(
-        `[data-entity-id="${activeEntityId}"][data-bbox-marker]`
+      // Buscamos los tres tipos de ancla por separado. PDF y OCR son
+      // intercambiables — cualquiera puede ser origen si está montado.
+      const pdfEl = document.querySelector<HTMLElement>(
+        `[data-entity-id="${activeEntityId}"][data-bbox-marker="bbox"],` +
+        `[data-entity-id="${activeEntityId}"][data-bbox-marker="textlayer"]`
+      );
+      const ocrEl = document.querySelector<HTMLElement>(
+        `[data-entity-id="${activeEntityId}"][data-bbox-marker="ocr"]`
       );
       const cardEl = document.querySelector<HTMLElement>(
         `[data-entity-id="${activeEntityId}"]:not([data-bbox-marker])`
       );
-      if (!bboxEl || !cardEl) {
-        setPoints(null);
-        return;
+
+      // Construimos la cadena de waypoints en orden de izquierda a
+      // derecha visual: PDF → OCR → Card. Si alguno no está, se omite
+      // (no rompe — el siguiente toma su lugar).
+      const points: Endpoint[] = [];
+      const addRightEdge = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        points.push({ x: r.right, y: r.top + r.height / 2 });
+      };
+      const addLeftEdge = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        points.push({ x: r.left, y: r.top + r.height / 2 });
+      };
+      // Cada nodo intermedio se cruza por su centro horizontal: la
+      // curva entra por la izquierda y sale por la derecha — eso da
+      // continuidad visual "pasamos por acá" sin doble flecha.
+      const addBothEdges = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        points.push({ x: r.left, y: r.top + r.height / 2 });
+        points.push({ x: r.right, y: r.top + r.height / 2 });
+      };
+
+      if (pdfEl) addRightEdge(pdfEl);
+      if (ocrEl) {
+        // OCR es nodo intermedio cuando hay PDF y Card a sus lados.
+        // Si está solo (sin PDF) o sin Card, se trata como extremo.
+        const hasLeft = !!pdfEl;
+        const hasRight = !!cardEl;
+        if (hasLeft && hasRight) addBothEdges(ocrEl);
+        else if (hasLeft) addLeftEdge(ocrEl);
+        else addRightEdge(ocrEl);
       }
-      const br = bboxEl.getBoundingClientRect();
-      const cr = cardEl.getBoundingClientRect();
-      // El leader sale del borde derecho del bbox y entra al borde
-      // izquierdo de la card; punto medio vertical en cada extremo.
-      setPoints({
-        x1: br.right,
-        y1: br.top + br.height / 2,
-        x2: cr.left,
-        y2: cr.top + cr.height / 2,
-      });
+      if (cardEl) addLeftEdge(cardEl);
+
+      // Necesitamos al menos 2 puntos para dibujar una curva.
+      setWaypoints(points.length >= 2 ? points : []);
     };
 
     recompute();
@@ -90,8 +116,8 @@ export default function LeaderLine({
     const onScroll = () => recompute();
     window.addEventListener('scroll', onScroll, true);
     window.addEventListener('resize', recompute);
-    // Re-medimos también periódicamente las primeras ~1s porque el PDF
-    // puede terminar de renderizar pages después del mount inicial.
+    // Re-medimos también periódicamente las primeras ~1.5s porque el
+    // PDF puede terminar de renderizar pages después del mount inicial.
     const interval = window.setInterval(recompute, 200);
     const stopInterval = window.setTimeout(
       () => window.clearInterval(interval),
@@ -106,16 +132,21 @@ export default function LeaderLine({
     };
   }, [activeEntityId, enabled]);
 
-  if (!points || !enabled) return null;
+  if (waypoints.length < 2 || !enabled) return null;
 
-  // Bézier cúbico horizontal. Las tangentes salen/entran horizontalmente
-  // (1/3 de la distancia X) para dar curva suave que no atraviese
-  // verticalmente el documento.
-  const dx = Math.max(40, Math.abs(points.x2 - points.x1) / 3);
-  const path = `M ${points.x1} ${points.y1} ` +
-               `C ${points.x1 + dx} ${points.y1}, ` +
-               `${points.x2 - dx} ${points.y2}, ` +
-               `${points.x2} ${points.y2}`;
+  // Construimos un path con varios segmentos Bézier. Cada segmento une
+  // dos waypoints consecutivos con tangentes horizontales (1/3 de la
+  // distancia X) para curva suave que no cruza verticalmente.
+  const segments: string[] = [];
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = waypoints[i];
+    const b = waypoints[i + 1];
+    const dx = Math.max(30, Math.abs(b.x - a.x) / 3);
+    segments.push(
+      `M ${a.x} ${a.y} C ${a.x + dx} ${a.y}, ${b.x - dx} ${b.y}, ${b.x} ${b.y}`,
+    );
+  }
+  const path = segments.join(' ');
 
   return (
     <svg
@@ -145,6 +176,18 @@ export default function LeaderLine({
         markerEnd="url(#leader-dot)"
         opacity={0.7}
       />
+      {/* Punto en el waypoint intermedio (OCR) si hay tres anclas. Hace
+          explícito que la curva "pasa por acá" y no es una sola línea
+          que se dobla por casualidad. */}
+      {waypoints.length >= 4 && (
+        <circle
+          cx={(waypoints[1].x + waypoints[2].x) / 2}
+          cy={(waypoints[1].y + waypoints[2].y) / 2}
+          r={3}
+          fill={color}
+          opacity={0.7}
+        />
+      )}
     </svg>
   );
 }
