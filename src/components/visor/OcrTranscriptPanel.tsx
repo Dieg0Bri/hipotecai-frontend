@@ -143,24 +143,22 @@ export default function OcrTranscriptPanel({ documento, paginas, activeEntity }:
 /**
  * Renderiza el texto de una página resaltando la entity activa.
  *
- * ⚠ Por qué string-match en vez de offsets:
- * `Anchor.char_start/char_end` vienen del extractor (langextract) que
- * corre sobre `assemble_text_and_offsets(pages)` — un ensamblado SIN
- * el header del .md (`# OCR — id_archivo X`, `> Modelo…`, `---`,
- * disclaimer, `## Página N` headers). El `.md` que el visor descarga
- * SÍ tiene ese header. Los dos sistemas de coordenadas no coinciden,
- * así que sumar/restar offsets crudos da basura.
+ * Estrategia en tres niveles (cae al siguiente si el actual no aplica):
  *
- * En cambio cada anchor trae `snippet`: el texto literal capturado del
- * documento. Buscarlo case-insensitive dentro del bloque de SU página
- * (filtrando por `a.page`) es robusto a:
- *  - El mismo texto en varias páginas → page filter lo separa
- *  - Whitespace OCR raro → es lo que el OCR capturó, idéntico al .md
- *  - Múltiples anchors por página → match cada uno por separado
+ *  1. **Offsets locales del anchor** — vienen del extractor (langextract)
+ *     persistidos por `_build_evidencia` ya convertidos a coords LOCALES
+ *     de la página (no globales del ensamblado). `text.slice(cs, ce)`
+ *     directo, sin restas. Es el match más preciso: apunta al span
+ *     exacto que el modelo identificó, incluso si el snippet se repite
+ *     en la misma página.
  *
- * Si una entity tiene anchors persistidos pero ninguno matchea acá
- * (porque el snippet salió de pdf_text en un doc mixto, p.ej.), cae
- * a un fallback con `entity.text` para no quedar sin highlight.
+ *  2. **Snippet match** — para anchors viejos creados antes del fix de
+ *     offsets (cuando `char_start/end` eran globales) o anchors sin
+ *     offsets. Busca el `snippet` literal case-insensitive dentro del
+ *     bloque de la página.
+ *
+ *  3. **entity.text match** — fallback final para entidades legacy sin
+ *     anchors persistidos. Busca el texto extraído tal cual.
  *
  * Los `<mark>` llevan `data-entity-id` + `data-bbox-marker="ocr"` para
  * que LeaderLine los pueda usar como ancla visual (PDF ↔ OCR ↔ Panel).
@@ -169,14 +167,33 @@ export default function OcrTranscriptPanel({ documento, paginas, activeEntity }:
  */
 function renderWithHighlight(
   text: string,
-  _pageGlobalStart: number, // reservado por si el backend algún día expone offsets en .md
+  _pageGlobalStart: number, // reservado por si en el futuro persistimos offsets del .md
   pageNumber: number,
   activeEntity: Entity | null,
 ): ReactNode {
   if (!activeEntity) return text;
 
-  // Path 1: snippets de anchors de ESTA página
-  const anchorMatches: Array<{ start: number; end: number; id_anchor: string }> = [];
+  // Path 1: offsets locales (preferido)
+  const offsetRanges: Array<{ start: number; end: number; id_anchor: string }> = [];
+  for (const a of activeEntity.anchors ?? []) {
+    if (a.fuente_texto !== 'ocr') continue;
+    if (a.estado === 'rechazado') continue;
+    if (a.page !== pageNumber) continue;
+    if (a.char_start == null || a.char_end == null) continue;
+    if (a.char_start < 0 || a.char_end > text.length) continue;
+    if (a.char_end <= a.char_start) continue;
+    offsetRanges.push({
+      start: a.char_start,
+      end: a.char_end,
+      id_anchor: a.id_anchor,
+    });
+  }
+  if (offsetRanges.length > 0) {
+    return renderRanges(text, dedupeOverlap(offsetRanges), activeEntity.id);
+  }
+
+  // Path 2: snippet match (anchors viejos sin offsets locales)
+  const snippetMatches: Array<{ start: number; end: number; id_anchor: string }> = [];
   const lowerText = text.toLowerCase();
   for (const a of activeEntity.anchors ?? []) {
     if (a.fuente_texto !== 'ocr') continue;
@@ -186,27 +203,17 @@ function renderWithHighlight(
     if (snippet.length < 3) continue;
     const idx = lowerText.indexOf(snippet.toLowerCase());
     if (idx < 0) continue;
-    anchorMatches.push({
+    snippetMatches.push({
       start: idx,
       end: idx + snippet.length,
       id_anchor: a.id_anchor,
     });
   }
-
-  // Dedupe overlap: si dos anchors capturaron el mismo snippet, no
-  // queremos pintar dos <mark> uno arriba del otro.
-  anchorMatches.sort((a, b) => a.start - b.start);
-  const nonOverlap: typeof anchorMatches = [];
-  for (const m of anchorMatches) {
-    const last = nonOverlap[nonOverlap.length - 1];
-    if (!last || m.start >= last.end) nonOverlap.push(m);
+  if (snippetMatches.length > 0) {
+    return renderRanges(text, dedupeOverlap(snippetMatches), activeEntity.id);
   }
 
-  if (nonOverlap.length > 0) {
-    return renderRanges(text, nonOverlap, activeEntity.id);
-  }
-
-  // Path 2: fallback con entity.text (entidades legacy o anchors sin snippet)
+  // Path 3: fallback con entity.text (entidades legacy sin anchors)
   if (!activeEntity.text || activeEntity.text.length < 3) return text;
   const needle = activeEntity.text.trim();
   const idx = lowerText.indexOf(needle.toLowerCase());
@@ -216,6 +223,16 @@ function renderWithHighlight(
     [{ start: idx, end: idx + needle.length, id_anchor: `fallback-${activeEntity.id}` }],
     activeEntity.id,
   );
+}
+
+function dedupeOverlap<T extends { start: number; end: number }>(ranges: T[]): T[] {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const out: T[] = [];
+  for (const r of sorted) {
+    const last = out[out.length - 1];
+    if (!last || r.start >= last.end) out.push(r);
+  }
+  return out;
 }
 
 function renderRanges(
